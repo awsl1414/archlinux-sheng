@@ -1,19 +1,17 @@
 # KDE Plasma 桌面（Arch Linux ARM aarch64）
-# 与 ubuntu-sheng 的 kde.list 一一对应，包名换成 Arch 的：
-#   qt6-wayland
-# Adreno (a740) 的 Vulkan 驱动：mesa 本体只给 GL/EGL，Vulkan ICD 是独立包。
-# 缺了它 Plasma/Steam/gamescope 走 Vulkan 的路径会退化或直接失败（Ubuntu 由 mesa-vulkan-drivers 提供）。
-vulkan-icd-loader
-vulkan-freedreno
-plasma-desktop / plasma-workspace / plasma-nm / sddm / konsole / dolphin / kate
-# 说明：
+# 与 ubuntu-sheng 的 kde.list 一一对应，包名换成 Arch 的。
+#
+# 注意：一行只能写一个包名（旧版曾用 `a / b / c` 这种斜杠分隔写法，解析器会把 `/`
+# 当包名，整批安装必然失败；现在 list_packages 直接对格式报错）。
+#
+#   * qt6-wayland：kwin_wayland / Plasma 会话的 Qt Wayland 平台插件
+#   * vulkan-icd-loader / vulkan-freedreno：Adreno (a740) 的 Vulkan ICD。
+#     mesa 本体只给 GL/EGL，缺了它 Plasma/Steam/gamescope 走 Vulkan 的路径会退化或直接失败
 #   * 不使用 plasma-meta（Arch 的 Plasma 元包，含大量用不到的可选件）
-#   * plasma-pa 提供音量 applet（Ubuntu 版不需要单列）
+#   * plasma-pa 提供音量 applet
 #   * kde-gtk-config / polkit-kde-agent 是 Plasma 会话的常用部件
 #   * 音频相关的 pipewire* / wireplumber 已由 base.list 安装，不重复列
 qt6-wayland
-# Adreno (a740) 的 Vulkan 驱动：mesa 本体只给 GL/EGL，Vulkan ICD 是独立包。
-# 缺了它 Plasma/Steam/gamescope 走 Vulkan 的路径会退化或直接失败（Ubuntu 由 mesa-vulkan-drivers 提供）。
 vulkan-icd-loader
 vulkan-freedreno
 plasma-desktop

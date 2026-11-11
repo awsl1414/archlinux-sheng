@@ -36,16 +36,31 @@ pac_version() {
 
 # ---------------------------------------------------------------------------
 # 读取包列表文件：过滤注释与空行，输出空格分隔的一行
-# 注意：grep 在"文件全是注释/空行"时返回 1；若不做兜底，调用方的
-# `pkgs="$(list_packages ...)"` 会在 set -e 下直接终止脚本且没有任何可读错误
-# （与 ubuntu-sheng 的 lib-apt.sh 同一处修复）。
+#   一行只能写一个包名。曾出现 `a / b / c` 这种斜杠写法：`/` 会被当成包名送进
+#   pacman，整批安装必然失败、退回逐个安装，最后打出一条全是 `/` 的"未安装包"警告，
+#   真正的缺失包反而被淹没。这里直接对格式报错。
+#   注意：grep 在"文件全是注释/空行"时返回 1；若不做兜底，调用方的
+#   `pkgs="$(list_packages ...)"` 会在 set -e 下直接终止脚本且没有任何可读错误
+#   （与 ubuntu-sheng 的 lib-apt.sh 同一处修复）。
 # ---------------------------------------------------------------------------
 list_packages() {
-  local file="$1" out
+  local file="$1" out line n=0
   [[ -f "$file" ]] || die "包列表不存在: $file"
+
+  while IFS= read -r line; do
+    n=$((n + 1))
+    [[ "$line" =~ ^[[:space:]]*(#|$) ]] && continue
+    if [[ "$line" == *[[:space:]]* ]]; then
+      die "$file 第 $n 行含空白（一行只能写一个包）: $line"
+    fi
+    if [[ ! "$line" =~ ^[a-z0-9@_+][a-z0-9@._+-]*$ ]]; then
+      die "$file 第 $n 行不是合法的 Arch 包名: $line"
+    fi
+  done < "$file"
+
   out="$(grep -vE '^[[:space:]]*(#|$)' "$file" | tr '\n' ' ' || true)"
   [[ -n "${out// /}" ]] || die "包列表为空（只有注释或空行）: $file"
-  printf '%s' "$out"
+  printf '%s' "${out% }"
 }
 
 # ---------------------------------------------------------------------------
@@ -91,13 +106,21 @@ pac_install_list_best_effort() {
   [[ -n "$pkgs" ]] || { warn "包列表是空的: $file"; return 0; }
 
   log "整批安装: $(basename "$file")"
+  # 保留整批安装的 stderr：失败原因（缺包 / 版本冲突 / 签名）只在这里出现一次，
+  # 直接丢掉的话，日志里只剩一条"整批安装失败"，无从判断是哪个包的问题。
+  local batch_err
+  batch_err="$(mktemp)"
   # shellcheck disable=SC2086
-  if pacman -S "${PAC_OPTS[@]}" $pkgs >/dev/null 2>&1; then
+  if pacman -S "${PAC_OPTS[@]}" $pkgs >"$batch_err" 2>&1; then
+    rm -f "$batch_err"
     log "整批安装成功: $(basename "$file")"
     return 0
   fi
+  warn "整批安装失败，原因如下（随后退回逐个安装）："
+  grep -E '^(error|warning):|^:: ' "$batch_err" | sed 's/^/    /' || sed 's/^/    /' "$batch_err"
+  rm -f "$batch_err"
 
-  warn "整批安装失败，退回逐个安装（跳过 ALARM 仓库里缺失或改名的包）"
+  warn "退回逐个安装（跳过 ALARM 仓库里缺失或改名的包）"
   for pkg in $pkgs; do
     if pac_installed "$pkg"; then
       printf '    [已有] %s\n' "$pkg"
