@@ -205,6 +205,12 @@ alarm_pacman_retry() {
 alarm_pack_chroot() {
   local root="${1:?需要 chroot 根目录}" out="${2:?需要输出 tarball}"
   [[ -d "$root" ]] || die "chroot 目录不存在: $root"
+  # 统一转成绝对路径：下面 tar 带 -C "$root"，相对路径会被解析到 chroot 内部，
+  # 快照就写进了 chroot 自己（CI 里表现为 upload-artifact 找不到文件）。
+  case "$out" in
+    /*) ;;
+    *) out="$PWD/$out" ;;
+  esac
   install -d "$(dirname "$out")"
   log "打包 chroot 以复用: $out"
   # --zstd：优先选 zstd（速度快），失败则退回 gzip

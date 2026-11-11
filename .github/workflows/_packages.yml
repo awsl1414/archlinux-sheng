@@ -4,24 +4,25 @@ name: _Build Device Packages (Arch)
 # 由 rootfs.yml 通过 workflow_call 调用，与 ubuntu-sheng 的 _packages.yml 一一对应。
 #
 # 与 Ubuntu 版的关键差异：
-#   * 所有包都由 makepkg 构建，因此每个作业都要先准备一个原生 ALARM aarch64
+#   * 所有包都由 makepkg 构建，因此每个作业都要一个原生 ALARM aarch64
 #     chroot（scripts/host/20-alarm-chroot.sh），再用 scripts/host/21-build-pkg.sh
 #     在 chroot 里以非 root 用户 builder 执行 makepkg。
 #   * runner 是原生 arm64（ubuntu-24.04-arm），所以 chroot 进 aarch64 的 Arch
 #     是原生的，**不需要 qemu-user-static / binfmt_misc**。
-#   * chroot 自身用 actions/cache 缓存 tar 快照（/mnt/alarm 是 root:root，
-#     actions/cache 对这类目录不友好，快照更可靠）。缓存 key 不含会滚动的
-#     ALARM tarball 地址，只含固定前缀 + 本工作流/脚本的 hash。
+#   * chroot 由 prepare-chroot 作业准备一次，打成快照走 artifact 分发给下游。
+#     不要改回 actions/cache：11 个并行作业用同一个 key 时只有一个能保存，
+#     其余全部 "Unable to reserve cache"，实测一轮 10 个作业各自重下 791 MB。
 #
 # 作业与上游 debian-sheng / ubuntu-sheng 的对应关系：
-#   build-kernel(custom_build) / build-kernel-prebuilt / build-fastrpc /
+#   prepare-chroot / build-kernel(custom_build) / build-kernel-prebuilt / build-fastrpc /
 #   build-libssc / build-iio-sensor-proxy / build-sheng-sensors /
-#   build-sheng-devauth / package-alsa / package-firmware / fetch-xiaomi-debs
+#   build-sheng-devauth / package-alsa / package-firmware / fetch-xiaomi-debs /
+#   build-libfprint / build-fprintd
 #
 # 为什么每个包一个作业（而不是全部塞进一个汇总作业）：
 #   * 与 ubuntu 版结构一一对应，便于对照维护
 #   * 单个包构建失败能精确定位到作业名，不会因为一个包挂掉而丢掉全部产物
-#   * 并行度高（runner 之间共享 cache，chroot 准备开销被缓存吸收）
+#   * 并行度高，chroot 准备开销只付一次
 #   * 汇总作业在这里是**行不通**的：6 个 xiaomi-* 包与 prebuilt 内核包的 PKGBUILD
 #     都声明 source=("<pkgname>.deb")，需要各自的下载/重打包步骤提供 deb 载荷；
 #     iio-sensor-proxy 还要求先安装本仓库构建的 libssc。这些依赖只有专用作业能保证。
@@ -43,12 +44,17 @@ on:
         description: '内核仓库分支'
         required: false
         type: string
-        default: 'sheng-7.2.6'
+        default: 'sheng-7.3.0'
       kernel_config:
         description: '内核配置文件（仓库内文件名）'
         required: false
         type: string
         default: 'sm8550.config'
+      kernel_localversion:
+        description: '钉住的 LOCALVERSION（写进 .config，覆盖 CONFIG_LOCALVERSION）。留空则用 config 里的值 + 自动提交计数'
+        required: false
+        type: string
+        default: '-sm8550-00104-g1fb56e66091e'
       firmware_repo:
         description: '设备固件仓库 URL'
         required: false
@@ -65,7 +71,7 @@ on:
         type: string
         default: 'code002-2/archlinux-sheng'
       rootfs_base:
-        description: '底包：alarm 或 holo-core'
+        description: '底包（只有 alarm；holo-core 的脚本已删除）'
         required: false
         type: string
         default: 'alarm'
@@ -89,6 +95,46 @@ env:
 
 jobs:
   # ---------------------------------------------------------------------------
+  # 0) 构建 chroot —— 整轮构建只准备一次
+  #
+  #    原先每个作业各自 actions/cache：11 个并行作业用同一个固定 key，
+  #    GitHub 只允许一个占位保存，其余全部 "Unable to reserve cache"。
+  #    实测一轮下来 10 个作业各自重新下载 791 MB tarball + 解包 + 建密钥环 +
+  #    -Syu（84 包 / 411 MB），单作业 ~150 秒，packages 阶段因此被拖到 4m38s。
+  #
+  #    改成：这个作业准备一次（含 base-devel、删 stock 内核），打成快照上传；
+  #    所有下游作业 download-artifact 后直接解包。快照约 820 MB，走 artifact
+  #    比 cache 更稳（cache 是"谁先占到算谁的"，artifact 是显式产物）。
+  # ---------------------------------------------------------------------------
+  prepare-chroot:
+    name: Prepare Build Chroot
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          repository: ${{ inputs.source_repo }}
+      - name: Install Host Tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq curl git zstd xz-utils libarchive-tools
+      - name: Prepare and Snapshot
+        run: |
+          chmod +x scripts/host/20-alarm-chroot.sh
+          sudo env ROOTFS_BASE="$ROOTFS_BASE" \
+            ALARM_CHROOT_PACK=chroot.tar.zst \
+            bash scripts/host/20-alarm-chroot.sh
+          ls -lh chroot.tar.zst
+      - name: Upload Build Chroot
+        uses: actions/upload-artifact@v7
+        with:
+          name: alarm-build-chroot
+          path: chroot.tar.zst
+          retention-days: 1
+          compression-level: 0
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
   # 1) 内核（自定义编译）
   #    stage-kernel.sh 编译并铺出 linux-xiaomi-sheng/custom 需要的 stage/ 树，
   #    再由 21-build-pkg.sh 把 stage/ 打成 pacman 包
@@ -97,6 +143,7 @@ jobs:
     name: Build Kernel (custom_build)
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 360
+    needs: [prepare-chroot]
     outputs:
       kernel_version: ${{ steps.build.outputs.kernel_version }}
     steps:
@@ -136,6 +183,7 @@ jobs:
           KERNEL_REPO: ${{ inputs.kernel_repo }}
           KERNEL_BRANCH: ${{ inputs.kernel_branch }}
           KERNEL_CONFIG: ${{ inputs.kernel_config }}
+          KERNEL_LOCALVERSION: ${{ inputs.kernel_localversion }}
         run: |
           set -euo pipefail
           git clone --depth 1 --branch "$KERNEL_BRANCH" "$KERNEL_REPO" linux-src
@@ -143,15 +191,14 @@ jobs:
           bash scripts/stage-kernel.sh linux-src "$KERNEL_CONFIG" \
             packages/linux-xiaomi-sheng/custom/stage
 
-      - name: Restore ALARM Build Chroot
+      - name: Download Prepared Build Chroot
         if: inputs.kernel_source == 'custom_build'
-        id: alarmcache
-        uses: actions/cache@v6
+        uses: actions/download-artifact@v8
         with:
-          path: .chroot-cache/chroot.tar.zst
-          key: chroot-v3-${{ inputs.rootfs_base }}-${{ runner.arch }}-${{ hashFiles('scripts/host/20-alarm-chroot.sh', 'scripts/common/distro-env.sh', 'scripts/host/alarm-lib.sh', 'scripts/host/holo-lib.sh') }}
+          name: alarm-build-chroot
+          path: .chroot-cache
 
-      - name: Prepare ALARM Chroot
+      - name: Unpack Build Chroot
         if: inputs.kernel_source == 'custom_build'
         env:
           ALARM_CHROOT_TAR: .chroot-cache/chroot.tar.zst
@@ -171,11 +218,6 @@ jobs:
           kver="${kpkg%%-*}"
           echo "内核版本: $kver"
           echo "kernel_version=$kver" >> "$GITHUB_OUTPUT"
-
-      - name: Save ALARM Build Chroot
-        if: inputs.kernel_source == 'custom_build' && steps.alarmcache.outputs.cache-hit != 'true'
-        run: |
-          sudo env ROOTFS_BASE="$ROOTFS_BASE" ALARM_CHROOT_PACK=.chroot-cache/chroot.tar.zst bash scripts/host/20-alarm-chroot.sh
 
       - name: Upload Kernel Package
         if: inputs.kernel_source == 'custom_build'
@@ -201,6 +243,7 @@ jobs:
   # ---------------------------------------------------------------------------
   build-kernel-prebuilt:
     name: Package Kernel (prebuilt)
+    needs: [prepare-chroot]
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 60
     steps:
@@ -229,12 +272,14 @@ jobs:
         run: |
           set -euo pipefail
           repo="${KERNEL_RELEASES_REPO:-ianchb/sm8550-mainline}"
-          # ⚠️ 这里**不能**图省事直接取「最新 release」。上游同时存在
+          # ⚠️ 这里**不能**图省事直接取「最新 release」。上游历史上出现过同名不同构建的
+          #      tag，例如 7.2.6 那次同时有：
           #      tag `7.2.6`      （09-16 构建，内核 7.2.6-sm8550-00102-gef2f794ee6f0，#241）
           #      tag `7.2.6-mac`  （09-17 构建，内核 7.2.6-sm8550-00103-g42f3b40c702a）
           #    而 boot.img 是按钉住的 kernel_release 取的。一旦内核 deb 取到「最新 release」，
           #    就会出现「rootfs 模块 00103 / boot.img 内核 00102」的版本错配 ——
           #    vermagic 不匹配 + /usr/lib/modules/<uname -r> 目录名对不上 → 内核不加载模块 → 设备黑屏（实跑踩过）。
+          #    当前钉的是 7.3.0（2026-10-23，内核 7.3.0-sm8550-00104-g1fb56e66091e）。
           tag="${KERNEL_RELEASE:-}"
           if [[ -z "$tag" ]]; then
             tag="$(gh release list --repo "$repo" --limit 1 --json tagName -q '.[0].tagName')"
@@ -251,15 +296,14 @@ jobs:
           cp -f "$src" packages/linux-xiaomi-sheng/prebuilt/linux-xiaomi-sheng.deb
           ls -lh packages/linux-xiaomi-sheng/prebuilt/
 
-      - name: Restore ALARM Build Chroot
+      - name: Download Prepared Build Chroot
         if: inputs.kernel_source != 'custom_build'
-        id: alarmcache
-        uses: actions/cache@v6
+        uses: actions/download-artifact@v8
         with:
-          path: .chroot-cache/chroot.tar.zst
-          key: chroot-v3-${{ inputs.rootfs_base }}-${{ runner.arch }}-${{ hashFiles('scripts/host/20-alarm-chroot.sh', 'scripts/common/distro-env.sh', 'scripts/host/alarm-lib.sh', 'scripts/host/holo-lib.sh') }}
+          name: alarm-build-chroot
+          path: .chroot-cache
 
-      - name: Prepare ALARM Chroot
+      - name: Unpack Build Chroot
         if: inputs.kernel_source != 'custom_build'
         env:
           ALARM_CHROOT_TAR: .chroot-cache/chroot.tar.zst
@@ -272,11 +316,6 @@ jobs:
         run: |
           chmod +x scripts/host/21-build-pkg.sh
           sudo env ROOTFS_BASE="$ROOTFS_BASE" bash scripts/host/21-build-pkg.sh linux-xiaomi-sheng/prebuilt
-
-      - name: Save ALARM Build Chroot
-        if: inputs.kernel_source != 'custom_build' && steps.alarmcache.outputs.cache-hit != 'true'
-        run: |
-          sudo env ROOTFS_BASE="$ROOTFS_BASE" ALARM_CHROOT_PACK=.chroot-cache/chroot.tar.zst bash scripts/host/20-alarm-chroot.sh
 
       - name: Upload Kernel Package
         if: inputs.kernel_source != 'custom_build'
@@ -292,6 +331,7 @@ jobs:
   # ---------------------------------------------------------------------------
   build-fastrpc:
     name: Build fastrpc
+    needs: [prepare-chroot]
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 60
     steps:
@@ -302,13 +342,12 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq curl git zstd xz-utils
-      - name: Restore ALARM Build Chroot
-        id: alarmcache
-        uses: actions/cache@v6
+      - name: Download Prepared Build Chroot
+        uses: actions/download-artifact@v8
         with:
-          path: .chroot-cache/chroot.tar.zst
-          key: chroot-v3-${{ inputs.rootfs_base }}-${{ runner.arch }}-${{ hashFiles('scripts/host/20-alarm-chroot.sh', 'scripts/common/distro-env.sh', 'scripts/host/alarm-lib.sh', 'scripts/host/holo-lib.sh') }}
-      - name: Prepare ALARM Chroot
+          name: alarm-build-chroot
+          path: .chroot-cache
+      - name: Unpack Build Chroot
         env:
           ALARM_CHROOT_TAR: .chroot-cache/chroot.tar.zst
         run: |
@@ -318,9 +357,6 @@ jobs:
         run: |
           chmod +x scripts/host/21-build-pkg.sh
           sudo env ROOTFS_BASE="$ROOTFS_BASE" bash scripts/host/21-build-pkg.sh fastrpc
-      - name: Save ALARM Build Chroot
-        if: steps.alarmcache.outputs.cache-hit != 'true'
-        run: sudo env ROOTFS_BASE="$ROOTFS_BASE" ALARM_CHROOT_PACK=.chroot-cache/chroot.tar.zst bash scripts/host/20-alarm-chroot.sh
       - uses: actions/upload-artifact@v7
         with:
           name: fastrpc-pkg
@@ -329,55 +365,12 @@ jobs:
           if-no-files-found: error
 
   # ---------------------------------------------------------------------------
-  # fastfetch（系统信息工具）：SteamOS/Frame 底包仓库只有 x86_64，aarch64 上装不了，
-  #   所以用自己的 pacman 链路从上游 git 源码打一个包随镜像分发。
-  #   版本不写死（PKGBUILD 的 pkgver() 从 git tag 推导）；编译失败不拖垮出图。
-  # ---------------------------------------------------------------------------
-  build-fastfetch:
-    name: Build fastfetch
-    runs-on: ubuntu-24.04-arm
-    timeout-minutes: 60
-    continue-on-error: true
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          repository: ${{ inputs.source_repo }}
-      - name: Install Host Tools
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq curl git zstd xz-utils
-      - name: Restore ALARM Build Chroot
-        id: alarmcache
-        uses: actions/cache@v6
-        with:
-          path: .chroot-cache/chroot.tar.zst
-          key: chroot-v3-${{ inputs.rootfs_base }}-${{ runner.arch }}-${{ hashFiles('scripts/host/20-alarm-chroot.sh', 'scripts/common/distro-env.sh', 'scripts/host/alarm-lib.sh', 'scripts/host/holo-lib.sh') }}
-      - name: Prepare ALARM Chroot
-        env:
-          ALARM_CHROOT_TAR: .chroot-cache/chroot.tar.zst
-        run: |
-          chmod +x scripts/host/20-alarm-chroot.sh
-          sudo env ROOTFS_BASE="$ROOTFS_BASE" ALARM_CHROOT_TAR="$ALARM_CHROOT_TAR" bash scripts/host/20-alarm-chroot.sh
-      - name: Build (makepkg)
-        run: |
-          chmod +x scripts/host/21-build-pkg.sh
-          sudo env ROOTFS_BASE="$ROOTFS_BASE" bash scripts/host/21-build-pkg.sh fastfetch
-      - name: Save ALARM Build Chroot
-        if: steps.alarmcache.outputs.cache-hit != 'true'
-        run: sudo env ROOTFS_BASE="$ROOTFS_BASE" ALARM_CHROOT_PACK=.chroot-cache/chroot.tar.zst bash scripts/host/20-alarm-chroot.sh
-      - uses: actions/upload-artifact@v7
-        with:
-          name: fastfetch-pkg
-          path: pkgs/*.pkg.tar.*
-          retention-days: 3
-          if-no-files-found: error
-
-  # ---------------------------------------------------------------------------
-  # 4) libssc（带 QRTR 等待补丁；ALARM extra 里也有 libssc，但版本为 0.4.4，
-  #    我们的包名同为 libssc，rootfs 安装时会先移除仓库版本再装本地包）
+  # 4) libssc（带 QRTR 等待补丁；ALARM extra 里也有 libssc 0.4.4，
+  #    我们的包同名，rootfs 安装时会先移除仓库版本再装本地包）
   # ---------------------------------------------------------------------------
   build-libssc:
     name: Build libssc
+    needs: [prepare-chroot]
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 60
     steps:
@@ -388,13 +381,12 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq curl git zstd xz-utils
-      - name: Restore ALARM Build Chroot
-        id: alarmcache
-        uses: actions/cache@v6
+      - name: Download Prepared Build Chroot
+        uses: actions/download-artifact@v8
         with:
-          path: .chroot-cache/chroot.tar.zst
-          key: chroot-v3-${{ inputs.rootfs_base }}-${{ runner.arch }}-${{ hashFiles('scripts/host/20-alarm-chroot.sh', 'scripts/common/distro-env.sh', 'scripts/host/alarm-lib.sh', 'scripts/host/holo-lib.sh') }}
-      - name: Prepare ALARM Chroot
+          name: alarm-build-chroot
+          path: .chroot-cache
+      - name: Unpack Build Chroot
         env:
           ALARM_CHROOT_TAR: .chroot-cache/chroot.tar.zst
         run: |
@@ -404,9 +396,6 @@ jobs:
         run: |
           chmod +x scripts/host/21-build-pkg.sh
           sudo env ROOTFS_BASE="$ROOTFS_BASE" bash scripts/host/21-build-pkg.sh libssc
-      - name: Save ALARM Build Chroot
-        if: steps.alarmcache.outputs.cache-hit != 'true'
-        run: sudo env ROOTFS_BASE="$ROOTFS_BASE" ALARM_CHROOT_PACK=.chroot-cache/chroot.tar.zst bash scripts/host/20-alarm-chroot.sh
       - uses: actions/upload-artifact@v7
         with:
           name: libssc-pkg
@@ -420,9 +409,9 @@ jobs:
   # ---------------------------------------------------------------------------
   build-iio-sensor-proxy:
     name: Build iio-sensor-proxy (SSC)
+    needs: [prepare-chroot, build-libssc]
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 60
-    needs: [build-libssc]
     steps:
       - uses: actions/checkout@v7
         with:
@@ -435,13 +424,12 @@ jobs:
         with:
           name: libssc-pkg
           path: deps
-      - name: Restore ALARM Build Chroot
-        id: alarmcache
-        uses: actions/cache@v6
+      - name: Download Prepared Build Chroot
+        uses: actions/download-artifact@v8
         with:
-          path: .chroot-cache/chroot.tar.zst
-          key: chroot-v3-${{ inputs.rootfs_base }}-${{ runner.arch }}-${{ hashFiles('scripts/host/20-alarm-chroot.sh', 'scripts/common/distro-env.sh', 'scripts/host/alarm-lib.sh', 'scripts/host/holo-lib.sh') }}
-      - name: Prepare ALARM Chroot
+          name: alarm-build-chroot
+          path: .chroot-cache
+      - name: Unpack Build Chroot
         env:
           ALARM_CHROOT_TAR: .chroot-cache/chroot.tar.zst
         run: |
@@ -453,9 +441,6 @@ jobs:
           # PKG_PREINSTALL 用真实文件路径（上游版本变化时按 glob 取第一个）
           PRE="$(ls -1 deps/libssc-*.pkg.tar.* | head -n1)"
           sudo env PKG_PREINSTALL="$PRE" bash scripts/host/21-build-pkg.sh iio-sensor-proxy
-      - name: Save ALARM Build Chroot
-        if: steps.alarmcache.outputs.cache-hit != 'true'
-        run: sudo env ROOTFS_BASE="$ROOTFS_BASE" ALARM_CHROOT_PACK=.chroot-cache/chroot.tar.zst bash scripts/host/20-alarm-chroot.sh
       - uses: actions/upload-artifact@v7
         with:
           name: iio-sensor-proxy-pkg
@@ -468,6 +453,7 @@ jobs:
   # ---------------------------------------------------------------------------
   build-sheng-sensors:
     name: Package sheng-sensors
+    needs: [prepare-chroot]
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 20
     steps:
@@ -478,13 +464,12 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq curl git zstd xz-utils
-      - name: Restore ALARM Build Chroot
-        id: alarmcache
-        uses: actions/cache@v6
+      - name: Download Prepared Build Chroot
+        uses: actions/download-artifact@v8
         with:
-          path: .chroot-cache/chroot.tar.zst
-          key: chroot-v3-${{ inputs.rootfs_base }}-${{ runner.arch }}-${{ hashFiles('scripts/host/20-alarm-chroot.sh', 'scripts/common/distro-env.sh', 'scripts/host/alarm-lib.sh', 'scripts/host/holo-lib.sh') }}
-      - name: Prepare ALARM Chroot
+          name: alarm-build-chroot
+          path: .chroot-cache
+      - name: Unpack Build Chroot
         env:
           ALARM_CHROOT_TAR: .chroot-cache/chroot.tar.zst
         run: |
@@ -494,9 +479,6 @@ jobs:
         run: |
           chmod +x scripts/host/21-build-pkg.sh
           sudo env ROOTFS_BASE="$ROOTFS_BASE" bash scripts/host/21-build-pkg.sh sheng-sensors
-      - name: Save ALARM Build Chroot
-        if: steps.alarmcache.outputs.cache-hit != 'true'
-        run: sudo env ROOTFS_BASE="$ROOTFS_BASE" ALARM_CHROOT_PACK=.chroot-cache/chroot.tar.zst bash scripts/host/20-alarm-chroot.sh
       - uses: actions/upload-artifact@v7
         with:
           name: sheng-sensors-pkg
@@ -509,6 +491,7 @@ jobs:
   # ---------------------------------------------------------------------------
   build-sheng-devauth:
     name: Build sheng-devauth
+    needs: [prepare-chroot]
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 30
     steps:
@@ -519,13 +502,12 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq curl git zstd xz-utils
-      - name: Restore ALARM Build Chroot
-        id: alarmcache
-        uses: actions/cache@v6
+      - name: Download Prepared Build Chroot
+        uses: actions/download-artifact@v8
         with:
-          path: .chroot-cache/chroot.tar.zst
-          key: chroot-v3-${{ inputs.rootfs_base }}-${{ runner.arch }}-${{ hashFiles('scripts/host/20-alarm-chroot.sh', 'scripts/common/distro-env.sh', 'scripts/host/alarm-lib.sh', 'scripts/host/holo-lib.sh') }}
-      - name: Prepare ALARM Chroot
+          name: alarm-build-chroot
+          path: .chroot-cache
+      - name: Unpack Build Chroot
         env:
           ALARM_CHROOT_TAR: .chroot-cache/chroot.tar.zst
         run: |
@@ -538,9 +520,6 @@ jobs:
           chmod +x scripts/host/21-build-pkg.sh
           sudo env MAKEPKG_ENV="SHENG_DEVAUTH_REPO=$SHENG_DEVAUTH_REPO" \
             bash scripts/host/21-build-pkg.sh sheng-devauth
-      - name: Save ALARM Build Chroot
-        if: steps.alarmcache.outputs.cache-hit != 'true'
-        run: sudo env ROOTFS_BASE="$ROOTFS_BASE" ALARM_CHROOT_PACK=.chroot-cache/chroot.tar.zst bash scripts/host/20-alarm-chroot.sh
       - uses: actions/upload-artifact@v7
         with:
           name: sheng-devauth-pkg
@@ -553,6 +532,7 @@ jobs:
   # ---------------------------------------------------------------------------
   package-alsa:
     name: Package alsa-xiaomi-sheng
+    needs: [prepare-chroot]
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 20
     steps:
@@ -563,13 +543,12 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq curl git zstd xz-utils
-      - name: Restore ALARM Build Chroot
-        id: alarmcache
-        uses: actions/cache@v6
+      - name: Download Prepared Build Chroot
+        uses: actions/download-artifact@v8
         with:
-          path: .chroot-cache/chroot.tar.zst
-          key: chroot-v3-${{ inputs.rootfs_base }}-${{ runner.arch }}-${{ hashFiles('scripts/host/20-alarm-chroot.sh', 'scripts/common/distro-env.sh', 'scripts/host/alarm-lib.sh', 'scripts/host/holo-lib.sh') }}
-      - name: Prepare ALARM Chroot
+          name: alarm-build-chroot
+          path: .chroot-cache
+      - name: Unpack Build Chroot
         env:
           ALARM_CHROOT_TAR: .chroot-cache/chroot.tar.zst
         run: |
@@ -579,9 +558,6 @@ jobs:
         run: |
           chmod +x scripts/host/21-build-pkg.sh
           sudo env ROOTFS_BASE="$ROOTFS_BASE" bash scripts/host/21-build-pkg.sh alsa-xiaomi-sheng
-      - name: Save ALARM Build Chroot
-        if: steps.alarmcache.outputs.cache-hit != 'true'
-        run: sudo env ROOTFS_BASE="$ROOTFS_BASE" ALARM_CHROOT_PACK=.chroot-cache/chroot.tar.zst bash scripts/host/20-alarm-chroot.sh
       - uses: actions/upload-artifact@v7
         with:
           name: alsa-xiaomi-sheng-pkg
@@ -595,6 +571,7 @@ jobs:
   # ---------------------------------------------------------------------------
   package-firmware:
     name: Package firmware-xiaomi-sheng
+    needs: [prepare-chroot]
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 30
     steps:
@@ -613,13 +590,12 @@ jobs:
           chmod +x scripts/stage-firmware.sh
           bash scripts/stage-firmware.sh "$FIRMWARE_REPO" "$FIRMWARE_BRANCH" \
             packages/firmware-xiaomi-sheng
-      - name: Restore ALARM Build Chroot
-        id: alarmcache
-        uses: actions/cache@v6
+      - name: Download Prepared Build Chroot
+        uses: actions/download-artifact@v8
         with:
-          path: .chroot-cache/chroot.tar.zst
-          key: chroot-v3-${{ inputs.rootfs_base }}-${{ runner.arch }}-${{ hashFiles('scripts/host/20-alarm-chroot.sh', 'scripts/common/distro-env.sh', 'scripts/host/alarm-lib.sh', 'scripts/host/holo-lib.sh') }}
-      - name: Prepare ALARM Chroot
+          name: alarm-build-chroot
+          path: .chroot-cache
+      - name: Unpack Build Chroot
         env:
           ALARM_CHROOT_TAR: .chroot-cache/chroot.tar.zst
         run: |
@@ -629,9 +605,6 @@ jobs:
         run: |
           chmod +x scripts/host/21-build-pkg.sh
           sudo env ROOTFS_BASE="$ROOTFS_BASE" bash scripts/host/21-build-pkg.sh firmware-xiaomi-sheng
-      - name: Save ALARM Build Chroot
-        if: steps.alarmcache.outputs.cache-hit != 'true'
-        run: sudo env ROOTFS_BASE="$ROOTFS_BASE" ALARM_CHROOT_PACK=.chroot-cache/chroot.tar.zst bash scripts/host/20-alarm-chroot.sh
       - uses: actions/upload-artifact@v7
         with:
           name: firmware-xiaomi-sheng-pkg
@@ -645,6 +618,7 @@ jobs:
   # ---------------------------------------------------------------------------
   fetch-xiaomi-debs:
     name: Fetch & Repack xiaomi-* packages
+    needs: [prepare-chroot]
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 60
     steps:
@@ -661,13 +635,12 @@ jobs:
         run: |
           chmod +x scripts/packages/fetch-xiaomi-debs.sh
           ./scripts/packages/fetch-xiaomi-debs.sh
-      - name: Restore ALARM Build Chroot
-        id: alarmcache
-        uses: actions/cache@v6
+      - name: Download Prepared Build Chroot
+        uses: actions/download-artifact@v8
         with:
-          path: .chroot-cache/chroot.tar.zst
-          key: chroot-v3-${{ inputs.rootfs_base }}-${{ runner.arch }}-${{ hashFiles('scripts/host/20-alarm-chroot.sh', 'scripts/common/distro-env.sh', 'scripts/host/alarm-lib.sh', 'scripts/host/holo-lib.sh') }}
-      - name: Prepare ALARM Chroot
+          name: alarm-build-chroot
+          path: .chroot-cache
+      - name: Unpack Build Chroot
         env:
           ALARM_CHROOT_TAR: .chroot-cache/chroot.tar.zst
         run: |
@@ -682,9 +655,6 @@ jobs:
           # 可能指向本仓库在其它作业里构建的包（libssc/sheng-sensors/sheng-devauth/
           # firmware-xiaomi-sheng），不在本 chroot 的仓库里，-s 会解析失败。
           sudo env ROOTFS_BASE="$ROOTFS_BASE" MAKEPKG_FLAGS="-df" bash scripts/host/22-repack-deb.sh deb-out
-      - name: Save ALARM Build Chroot
-        if: steps.alarmcache.outputs.cache-hit != 'true'
-        run: sudo env ROOTFS_BASE="$ROOTFS_BASE" ALARM_CHROOT_PACK=.chroot-cache/chroot.tar.zst bash scripts/host/20-alarm-chroot.sh
       - uses: actions/upload-artifact@v7
         with:
           name: xiaomi-pkgs
@@ -695,54 +665,6 @@ jobs:
         with:
           name: xiaomi-debs
           path: deb-out/*.deb
-          retention-days: 3
-          if-no-files-found: error
-
-  # ---------------------------------------------------------------------------
-  # 11) SDDM（显示管理器）—— 只给 holo-core 底包用
-  #   Holo Core 源里没有任何显示管理器（sddm/gdm/lightdm/greetd 全无），但构建依赖齐全，
-  #   因此自己 makepkg 一个。ALARM 模式用仓库自带的 sddm，不用这个包（rootfs.yml 只在
-  #   rootfs_base=holo-core 时收集它）。
-  # ---------------------------------------------------------------------------
-  build-sddm:
-    name: Build sddm (holo-core)
-    if: inputs.rootfs_base == 'holo-core'
-    # 可选件：SDDM 装不上时镜像会自动退回 plasma-autologin 兜底方案（见 40-system-config.sh），
-    # 因此这里失败不阻塞整轮构建，只让 sddm-pkg 产物缺失。
-    continue-on-error: true
-    runs-on: ubuntu-24.04-arm
-    timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          repository: ${{ inputs.source_repo }}
-      - name: Install Host Tools
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq curl git zstd xz-utils
-      - name: Restore Build Chroot
-        id: alarmcache
-        uses: actions/cache@v6
-        with:
-          path: .chroot-cache/chroot.tar.zst
-          key: chroot-v3-${{ inputs.rootfs_base }}-${{ runner.arch }}-${{ hashFiles('scripts/host/20-alarm-chroot.sh', 'scripts/common/distro-env.sh', 'scripts/host/alarm-lib.sh', 'scripts/host/holo-lib.sh') }}
-      - name: Prepare Build Chroot
-        env:
-          ALARM_CHROOT_TAR: .chroot-cache/chroot.tar.zst
-        run: |
-          chmod +x scripts/host/20-alarm-chroot.sh
-          sudo env ROOTFS_BASE="$ROOTFS_BASE" ALARM_CHROOT_TAR="$ALARM_CHROOT_TAR" bash scripts/host/20-alarm-chroot.sh
-      - name: Build (makepkg)
-        run: |
-          chmod +x scripts/host/21-build-pkg.sh
-          sudo env ROOTFS_BASE="$ROOTFS_BASE" bash scripts/host/21-build-pkg.sh sddm
-      - name: Save Build Chroot
-        if: steps.alarmcache.outputs.cache-hit != 'true'
-        run: sudo env ROOTFS_BASE="$ROOTFS_BASE" ALARM_CHROOT_PACK=.chroot-cache/chroot.tar.zst bash scripts/host/20-alarm-chroot.sh
-      - uses: actions/upload-artifact@v7
-        with:
-          name: sddm-pkg
-          path: pkgs/sddm-*.pkg.tar.*
           retention-days: 3
           if-no-files-found: error
 
@@ -759,6 +681,7 @@ jobs:
   # ---------------------------------------------------------------------------
   build-libfprint:
     name: Build libfprint
+    needs: [prepare-chroot]
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 60
     steps:
@@ -769,13 +692,12 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq curl git zstd xz-utils
-      - name: Restore ALARM Build Chroot
-        id: alarmcache
-        uses: actions/cache@v6
+      - name: Download Prepared Build Chroot
+        uses: actions/download-artifact@v8
         with:
-          path: .chroot-cache/chroot.tar.zst
-          key: chroot-v3-${{ inputs.rootfs_base }}-${{ runner.arch }}-${{ hashFiles('scripts/host/20-alarm-chroot.sh', 'scripts/common/distro-env.sh', 'scripts/host/alarm-lib.sh', 'scripts/host/holo-lib.sh') }}
-      - name: Prepare ALARM Chroot
+          name: alarm-build-chroot
+          path: .chroot-cache
+      - name: Unpack Build Chroot
         env:
           ALARM_CHROOT_TAR: .chroot-cache/chroot.tar.zst
         run: |
@@ -785,9 +707,6 @@ jobs:
         run: |
           chmod +x scripts/host/21-build-pkg.sh
           sudo env ROOTFS_BASE="$ROOTFS_BASE" bash scripts/host/21-build-pkg.sh libfprint
-      - name: Save ALARM Build Chroot
-        if: steps.alarmcache.outputs.cache-hit != 'true'
-        run: sudo env ROOTFS_BASE="$ROOTFS_BASE" ALARM_CHROOT_PACK=.chroot-cache/chroot.tar.zst bash scripts/host/20-alarm-chroot.sh
       - uses: actions/upload-artifact@v7
         with:
           name: libfprint-pkg
@@ -799,9 +718,9 @@ jobs:
   #   （与 iio-sensor-proxy 依赖 libssc 的处理方式完全一致）
   build-fprintd:
     name: Build fprintd
+    needs: [prepare-chroot, build-libfprint]
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 60
-    needs: [build-libfprint]
     steps:
       - uses: actions/checkout@v7
         with:
@@ -814,13 +733,12 @@ jobs:
         with:
           name: libfprint-pkg
           path: deps
-      - name: Restore ALARM Build Chroot
-        id: alarmcache
-        uses: actions/cache@v6
+      - name: Download Prepared Build Chroot
+        uses: actions/download-artifact@v8
         with:
-          path: .chroot-cache/chroot.tar.zst
-          key: chroot-v3-${{ inputs.rootfs_base }}-${{ runner.arch }}-${{ hashFiles('scripts/host/20-alarm-chroot.sh', 'scripts/common/distro-env.sh', 'scripts/host/alarm-lib.sh', 'scripts/host/holo-lib.sh') }}
-      - name: Prepare ALARM Chroot
+          name: alarm-build-chroot
+          path: .chroot-cache
+      - name: Unpack Build Chroot
         env:
           ALARM_CHROOT_TAR: .chroot-cache/chroot.tar.zst
         run: |
@@ -831,9 +749,6 @@ jobs:
           chmod +x scripts/host/21-build-pkg.sh
           PRE="$(ls -1 deps/libfprint-*.pkg.tar.* | head -n1)"
           sudo env PKG_PREINSTALL="$PRE" bash scripts/host/21-build-pkg.sh fprintd
-      - name: Save ALARM Build Chroot
-        if: steps.alarmcache.outputs.cache-hit != 'true'
-        run: sudo env ROOTFS_BASE="$ROOTFS_BASE" ALARM_CHROOT_PACK=.chroot-cache/chroot.tar.zst bash scripts/host/20-alarm-chroot.sh
       - uses: actions/upload-artifact@v7
         with:
           name: fprintd-pkg
