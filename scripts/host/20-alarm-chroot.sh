@@ -43,7 +43,7 @@ source "$HERE/../common/distro-env.sh"
 source "$HERE/alarm-lib.sh"
 require_root
 
-# 构建 chroot 目录由底包决定（ROOTFS_BASE=alarm → /mnt/alarm；holo-core → /mnt/holo）
+# 构建 chroot 目录（ROOTFS_BASE=alarm → /mnt/alarm）
 ALARM_CHROOT="${ALARM_CHROOT:-/mnt/alarm}"
 ALARM_CHROOT_TAR="${ALARM_CHROOT_TAR:-}"
 ALARM_CHROOT_PACK="${ALARM_CHROOT_PACK:-}"
@@ -54,14 +54,17 @@ BUILDER_USER="${BUILDER_USER:-builder}"
 mkdir -p "$ALARM_CHROOT"
 
 # ---------------------------------------------------------------------------
-# 1) 准备 chroot 根目录：优先用缓存 tarball，其次解包 ALARM tarball
+# 1) 准备 chroot 根目录：优先用快照 tarball，其次解包 ALARM tarball
 # ---------------------------------------------------------------------------
 if [[ -x "$ALARM_CHROOT/usr/bin/pacman" ]]; then
   log "复用已就绪的 chroot: $ALARM_CHROOT"
 else
   if [[ -n "$ALARM_CHROOT_TAR" && -s "$ALARM_CHROOT_TAR" ]]; then
-    log "从缓存快照恢复 chroot: $ALARM_CHROOT_TAR ($(du -h "$ALARM_CHROOT_TAR" | cut -f1))"
-    if ! tar -xpf "$ALARM_CHROOT_TAR" -C "$ALARM_CHROOT" 2>/dev/null; then
+    # 转绝对路径：tar 的 -C 在前，相对路径会被解析到 chroot 内部
+    chroot_tar_abs="$ALARM_CHROOT_TAR"
+    case "$chroot_tar_abs" in /*) ;; *) chroot_tar_abs="$PWD/$chroot_tar_abs" ;; esac
+    log "从快照恢复 chroot: $ALARM_CHROOT_TAR ($(du -h "$chroot_tar_abs" | cut -f1))"
+    if ! tar -xpf "$chroot_tar_abs" -C "$ALARM_CHROOT" 2>/dev/null; then
       warn "快照解包失败，改为从 ALARM tarball 重建"
       rm -rf "${ALARM_CHROOT:?}/"* "${ALARM_CHROOT:?}/".[!.]* 2>/dev/null || true
     fi
@@ -71,18 +74,10 @@ fi
 if [[ ! -x "$ALARM_CHROOT/usr/bin/pacman" ]]; then
   _ALARM_TMP="$(mktemp -d)"
   trap 'rm -rf "$_ALARM_TMP"' EXIT
-  if [[ "$ROOTFS_BASE" == "holo-core" ]]; then
-    log "底包 = Holo Core（$HOLO_SNAPSHOT）：下载 system.rootfs.zst 作为构建 chroot"
-    HOLO_ROOTFS_PATH="${HOLO_ROOTFS_PATH:-$_ALARM_TMP/system.rootfs.zst}"
-    holo_fetch_rootfs "$HOLO_ROOTFS_PATH"
-    holo_extract_rootfs "$HOLO_ROOTFS_PATH" "$ALARM_CHROOT"
-    holo_ensure_base_dirs "$ALARM_CHROOT"
-  else
-    ALARM_TARBALL_PATH="${ALARM_TARBALL_PATH:-$_ALARM_TMP/ArchLinuxARM-aarch64-latest.tar.gz}"
-    alarm_fetch_tarball "$ALARM_TARBALL_PATH"
-    log "解包 ALARM 到 $ALARM_CHROOT"
-    alarm_extract_tarball "$ALARM_TARBALL_PATH" "$ALARM_CHROOT"
-  fi
+  ALARM_TARBALL_PATH="${ALARM_TARBALL_PATH:-$_ALARM_TMP/ArchLinuxARM-aarch64-latest.tar.gz}"
+  alarm_fetch_tarball "$ALARM_TARBALL_PATH"
+  log "解包 ALARM 到 $ALARM_CHROOT"
+  alarm_extract_tarball "$ALARM_TARBALL_PATH" "$ALARM_CHROOT"
   [[ -x "$ALARM_CHROOT/usr/bin/pacman" ]] || die "解包后仍找不到 pacman，底包可能损坏"
   FRESH_CHROOT=1
 else
@@ -102,19 +97,15 @@ alarm_mount_virtfs "$ALARM_CHROOT"
 # ---------------------------------------------------------------------------
 # 2) 镜像源 / DNS / 架构
 # ---------------------------------------------------------------------------
-if [[ "$ROOTFS_BASE" == "holo-core" ]]; then
-  # Holo Core：core + extra 两个仓库，SigLevel = Optional（包未强制签名）
-  holo_write_repo_config "$ALARM_CHROOT"
-else
-  log "写入 pacman 镜像源: $ALARM_MIRROR/\$arch/\$repo"
-  install -d "$ALARM_CHROOT/etc/pacman.d"
-  # 多 Server 故障切换：pacman 对每个文件按 Server 顺序逐个尝试（下载失败就换下一个），
-  # 实测单个 mirror.archlinuxarm.org 抖动会报
-  #   error: failed retrieving file ... : Operation too slow. Less than 1 bytes/sec ...
-  #   warning: too many errors from mirror.archlinuxarm.org, skipping for the remainder of this transaction
-  #   error: failed to commit transaction (download library error)
-  # 直接把包作业（尤其 makepkg 的依赖安装）打挂，所以这里列多个镜像做冗余。
-  cat > "$ALARM_CHROOT/etc/pacman.d/mirrorlist" <<EOF
+log "写入 pacman 镜像源: $ALARM_MIRROR/\$arch/\$repo"
+install -d "$ALARM_CHROOT/etc/pacman.d"
+# 多 Server 故障切换：pacman 对每个文件按 Server 顺序逐个尝试（下载失败就换下一个），
+# 实测单个 mirror.archlinuxarm.org 抖动会报
+#   error: failed retrieving file ... : Operation too slow. Less than 1 bytes/sec ...
+#   warning: too many errors from mirror.archlinuxarm.org, skipping for the remainder of this transaction
+#   error: failed to commit transaction (download library error)
+# 直接把包作业（尤其 makepkg 的依赖安装）打挂，所以这里列多个镜像做冗余。
+cat > "$ALARM_CHROOT/etc/pacman.d/mirrorlist" <<EOF
 # archlinux-sheng：由 scripts/host/20-alarm-chroot.sh 生成（构建用 chroot，非最终镜像）
 # 可用镜像列表见 https://archlinuxarm.org/about/mirrors
 Server = ${ALARM_MIRROR}/\$arch/\$repo
@@ -125,7 +116,6 @@ Server = http://sg.mirror.archlinuxarm.org/\$arch/\$repo
 Server = https://mirrors.tuna.tsinghua.edu.cn/archlinuxarm/\$arch/\$repo
 Server = https://mirrors.ustc.edu.cn/archlinuxarm/\$arch/\$repo
 EOF
-fi
 
 # DNS：chroot 里没有任何 resolver 在跑，必须给它一个可用的 /etc/resolv.conf。
 # 两个已知坑（首次实跑时就是这里失败：chroot 内报 "Could not resolve host"）：
@@ -187,21 +177,22 @@ alarm_chroot_run "$ALARM_CHROOT" pacman -S --noconfirm --needed \
   libarchive jq ccache $ALARM_EXTRA_PKGS || warn "可选构建工具安装失败（已忽略）"
 
 # ---------------------------------------------------------------------------
-# 4.5) 移除构建 chroot 自带的发行版内核
-#   底包（ALARM tarball / Holo Core rootfs）都预装了 stock 内核，而我们在 21-build-pkg.sh
-#   里会把构建产物 linux-xiaomi-sheng 装进同一个 chroot 供后续包使用，于是报：
-#     :: linux-xiaomi-sheng-... and linux-6.17.8.arch1-1 are in conflict
-#     [21-build-pkg.sh] 警告: 把 linux-xiaomi-sheng-... 装入构建 chroot 失败
-#   （pacman --noconfirm 对"是否移除冲突包"默认回答 N）。
-#   构建 chroot 不需要内核，-Rdd 直接删掉，顺带把缓存快照缩小约 500 MB。
+# 4.5) 移除构建 chroot 自带的发行版内核（-Syu 之后）
+#    ALARM 的底包只有 linux-aarch64（没有名为 linux 的包）。21-build-pkg.sh 会把
+#    本仓库的 linux-xiaomi-sheng 装进同一个 chroot 供后续包使用，两者冲突时
+#    pacman --noconfirm 默认不移除，直接失败：
+#      :: linux-xiaomi-sheng-... and linux-aarch64-... are in conflict
+#    构建 chroot 不需要内核，-Rdd 删掉，快照小约 385 MB（实测 Total Removed Size）。
+#
+#    必须放在 -Syu 之后：底包自带该包，事务前删会被 -Syu 装回来。
+#    -Syu 期间那次 initramfs 重建会报 "failed to detect root filesystem"，
+#    属预期噪音，不影响事务，不改它。
 # ---------------------------------------------------------------------------
-for name in linux linux-aarch64; do
-  if alarm_chroot_run "$ALARM_CHROOT" pacman -Q "$name" >/dev/null 2>&1; then
-    log "移除构建 chroot 自带的发行版内核: $name（与 linux-xiaomi-sheng 冲突且构建不需要）"
-    alarm_chroot_run "$ALARM_CHROOT" pacman -Rdd --noconfirm --color never "$name" \
-      || warn "移除 $name 失败（继续，仅影响日志噪音）"
-  fi
-done
+if alarm_chroot_run "$ALARM_CHROOT" pacman -Q linux-aarch64 >/dev/null 2>&1; then
+  log "移除构建 chroot 自带的发行版内核: linux-aarch64"
+  alarm_chroot_run "$ALARM_CHROOT" pacman -Rdd --noconfirm --color never linux-aarch64 \
+    || die "移除 linux-aarch64 失败（后续安装 linux-xiaomi-sheng 会冲突）"
+fi
 
 # ---------------------------------------------------------------------------
 # 5) 允许以非 root 用户 builder 执行 makepkg

@@ -22,36 +22,50 @@ MOUNT="${2:-/mnt/rootfs}"
 FS_UUID="${FS_UUID:-ee8d3593-59b1-480e-a3b6-4fefb17ee7d8}"
 SHRINK_IMAGE="${SHRINK_IMAGE:-true}"
 
-# 卸载（可能残留 bind mount，递归卸载兜底）
-umount -R "$MOUNT" 2>/dev/null || umount "$MOUNT" 2>/dev/null || warn "挂载点未挂载或已卸载: $MOUNT"
+# ---------------------------------------------------------------------------
+# 卸载
+#   硬失败。实测镜像仍挂载时 umount 失败后，后面的 e2fsck / resize2fs / tune2fs
+#   会全部静默失败，脚本一路"成功"退出，产物保持 10 GiB —— 这个脚本的产出就是
+#   收缩好的镜像，卸载失败就等于失败。
+#   03-umount-chroot.sh 只卸 chroot 的虚拟文件系统，镜像本身在这里卸。
+# ---------------------------------------------------------------------------
+umount -R "$MOUNT" 2>/dev/null || true
+mountpoint -q "$MOUNT" && die "无法卸载 $MOUNT：镜像仍在挂载"
 sync
 log "镜像已卸载"
 
-e2fsck -fy "$IMAGE" >/dev/null 2>&1 || warn "e2fsck 报告了问题（已尝试修复）"
+# e2fsck 返回 0 = 干净，1 = 已修复（可接受），>=2 = 无法修复
+# 输出留一份：失败时 die 之前把它打出来，否则下一轮构建失败无从排查
+FE_OUT="$(mktemp)"
+rc=0
+e2fsck -fy "$IMAGE" >"$FE_OUT" 2>&1 || rc=$?
+case "$rc" in
+  0) : ;;
+  1) warn "e2fsck 修复了文件系统错误（镜像仍可用）" ;;
+  *)
+    sed 's/^/    /' "$FE_OUT" | tail -20 >&2
+    rm -f "$FE_OUT"
+    die "e2fsck 失败（退出码 $rc）：镜像文件系统已损坏，不可刷写" ;;
+esac
+rm -f "$FE_OUT"
 
 if [[ "$SHRINK_IMAGE" == "true" ]]; then
   before="$(du -h --apparent-size "$IMAGE" | cut -f1)"
-  if resize2fs -M "$IMAGE" >/dev/null 2>&1; then
-    # 把文件本身截断到文件系统实际大小（resize2fs -M 只缩文件系统不缩文件）
-    blocks="$(dumpe2fs -h "$IMAGE" 2>/dev/null | awk -F: '/Block count/{gsub(/ /,"",$2); print $2}')"
-    bsize="$(dumpe2fs -h "$IMAGE" 2>/dev/null | awk -F: '/Block size/{gsub(/ /,"",$2); print $2}')"
-    if [[ -n "$blocks" && -n "$bsize" ]]; then
-      truncate -s "$((blocks * bsize))" "$IMAGE"
-      SHRINK_RESULT="成功（$before → $(du -h --apparent-size "$IMAGE" | cut -f1)）"
-      log "镜像已收缩: $SHRINK_RESULT"
-    else
-      SHRINK_RESULT="文件系统已缩小，但未能算出块数（文件未截断）"
-      warn "$SHRINK_RESULT"
-    fi
-  else
-    SHRINK_RESULT="失败（保持 $before；镜像仍可刷写，首启前会占满分区）"
-    warn "resize2fs -M 不可用，$SHRINK_RESULT"
-  fi
+  resize2fs -M "$IMAGE" || die "resize2fs -M 失败（镜像仍是 $before，不能作为产物上传）"
+
+  # resize2fs -M 只缩文件系统，不缩文件本身；必须自己 truncate
+  blocks="$(dumpe2fs -h "$IMAGE" 2>/dev/null | awk -F: '/Block count/{gsub(/ /,"",$2); print $2; exit}')"
+  bsize="$(dumpe2fs -h "$IMAGE" 2>/dev/null | awk -F: '/Block size/{gsub(/ /,"",$2); print $2; exit}')"
+  [[ -n "$blocks" && -n "$bsize" ]] || die "无法从 dumpe2fs 读取块数/块大小"
+  truncate -s "$((blocks * bsize))" "$IMAGE"
+
+  SHRINK_RESULT="成功（$before → $(du -h --apparent-size "$IMAGE" | cut -f1)）"
+  log "镜像已收缩: $SHRINK_RESULT"
 else
   SHRINK_RESULT="已跳过（shrink_image=false）"
 fi
 
-tune2fs -U "$FS_UUID" "$IMAGE" >/dev/null 2>&1 || warn "设置文件系统 UUID 失败（fstab 用 PARTLABEL，不影响启动）"
+tune2fs -U "$FS_UUID" "$IMAGE" || die "设置文件系统 UUID 失败"
 
 log "最终产物:"
 ls -lh "$IMAGE" | sed 's/^/    /'
