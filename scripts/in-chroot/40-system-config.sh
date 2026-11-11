@@ -37,6 +37,7 @@ DESKTOP="${DESKTOP:-server}"
 AUTOLOGIN="${AUTOLOGIN:-false}"
 PLASMA_MOBILE="${PLASMA_MOBILE:-false}"
 LANGUAGE="${LANGUAGE:-None (C.UTF-8)}"
+GEN_LOCALES="${GEN_LOCALES:-}"
 PARTITION_LABEL="${PARTITION_LABEL:-linux}"
 
 # ---------------------------------------------------------------------------
@@ -49,33 +50,73 @@ if ! grep -q "127.0.1.1[[:space:]]*$HOSTNAME" /etc/hosts 2>/dev/null; then
 fi
 
 # ---------------------------------------------------------------------------
-# 2) locale（与 ubuntu 版一致：生成所选 locale + en_US.UTF-8）
+# 2) locale
 #    Arch：locale 由 glibc 提供，/etc/locale.gen 决定生成哪些，然后 locale-gen
+#
+#    LANGUAGE        系统语言，写进 /etc/locale.conf 的 LANG
+#    GEN_LOCALES     额外要生成的 locale（逗号分隔），留空则只生成系统语言
+#                    用途：系统用英文、但想让中文/日文程序正常显示的场合
+#    C.UTF-8 是 glibc 内建的，不需要生成。
 # ---------------------------------------------------------------------------
 if [[ "$LANGUAGE" == "None (C.UTF-8)" ]]; then
-  log "locale: 保持 C.UTF-8（跳过 locale-gen）"
+  # 必须显式写 locale.conf。ALARM tarball 自带的 /etc/locale.conf 是 LANG=C，
+  # 与 C.UTF-8 不是一回事：前者按 ASCII 处理非 ASCII 字符，setlocale 会失败。
+  want_lang="C.UTF-8"
 else
-  log "生成 locale: $LANGUAGE"
-  [[ -f /etc/locale.gen ]] || die "缺少 /etc/locale.gen（glibc 是否已安装？）"
-  sed -i 's/^# *\(en_US\.UTF-8\)/\1/' /etc/locale.gen
-  esc="$(printf '%s' "$LANGUAGE" | sed 's/\./\\./g')"
-  sed -i "s/^# *\(${esc}\)/\1/" /etc/locale.gen
-  if ! grep -qE "^${esc}[[:space:]]" /etc/locale.gen; then
-    warn "/etc/locale.gen 里没有可直接放开的 $LANGUAGE 条目，尝试整行追加"
-    printf '%s UTF-8\n' "$LANGUAGE" >> /etc/locale.gen
-  fi
-  locale-gen
-  # 生成结果校验：locale -a 的命名与 locale.gen 的写法不完全一致（zh_CN.UTF-8 → zh_CN.utf8），
-  # 因此只做归一化后的比对并告警，不硬失败
-  _want="$(printf '%s' "$LANGUAGE" | tr 'A-Z' 'a-z' | sed 's/utf-8/utf8/')"
-  if locale -a 2>/dev/null | tr 'A-Z' 'a-z' | grep -qx "$_want"; then
-    log "locale 已生成: $_want"
-  else
-    warn "locale -a 里没有找到 $_want（可能是命名差异），请人工确认 locale 是否生效"
-  fi
-  # Arch（systemd）约定：/etc/locale.conf
-  printf 'LANG=%s\n' "$LANGUAGE" > /etc/locale.conf
+  want_lang="$LANGUAGE"
 fi
+
+# 生成列表 = 系统语言 + 额外列表，去重，跳过内建的 C.UTF-8
+GEN=()
+_add_gen() {
+  [[ "$1" == "C.UTF-8" || -z "$1" ]] && return
+  local x
+  for x in "${GEN[@]}"; do [[ "$x" == "$1" ]] && return; done
+  GEN+=("$1")
+}
+_add_gen "$want_lang"
+for l in ${GEN_LOCALES//,/ }; do _add_gen "$l"; done
+
+if [[ "${#GEN[@]}" -eq 0 ]]; then
+  log "locale: C.UTF-8（glibc 内建，无需生成）"
+else
+  [[ -f /etc/locale.gen ]] || die "缺少 /etc/locale.gen（glibc 是否已安装？）"
+
+  log "生成 locale: ${GEN[*]}（系统 LANG=$want_lang）"
+  for l in "${GEN[@]}"; do
+    esc="$(printf '%s' "$l" | sed 's/\./\\./g')"
+    sed -i "s/^# *\(${esc}\)/\1/" /etc/locale.gen
+    grep -qE "^${esc}[[:space:]]" /etc/locale.gen \
+      || die "/etc/locale.gen 里没有 $l 这个条目（名字写错了？）"
+  done
+
+  locale-gen || die "locale-gen 失败"
+
+  # locale -a 的命名与 locale.gen 不完全一致（zh_CN.UTF-8 → zh_CN.utf8），归一化后比对
+  for l in "${GEN[@]}"; do
+    _want="$(printf '%s' "$l" | tr 'A-Z' 'a-z' | sed 's/utf-8/utf8/')"
+    locale -a 2>/dev/null | tr 'A-Z' 'a-z' | grep -qx "$_want" \
+      || die "locale-gen 后 locale -a 里没有 $_want"
+    log "  locale 已生成: $l"
+  done
+fi
+
+# Arch（systemd）约定：/etc/locale.conf
+printf 'LANG=%s\n' "$want_lang" > /etc/locale.conf
+
+# ---------------------------------------------------------------------------
+# 2.5) 时区
+#   旧实现没有这一步，镜像里没有 /etc/localtime，systemd 按 UTC 处理，
+#   桌面上的时间比本地慢几个小时。
+#   tzdata 已在 base.list 里安装，/usr/share/zoneinfo/<TZ> 存在。
+#   chroot 内没有运行中的 systemd，timedatectl 不可用，直接建软链。
+#   systemd 只认 /etc/localtime；/etc/timezone 是 Debian 的约定，不写。
+# ---------------------------------------------------------------------------
+: "${TIMEZONE:?需要 TIMEZONE}"
+[[ -f "/usr/share/zoneinfo/$TIMEZONE" ]] || die "时区不存在: /usr/share/zoneinfo/$TIMEZONE"
+rm -f /etc/localtime
+ln -s "/usr/share/zoneinfo/$TIMEZONE" /etc/localtime
+log "时区已设置: $TIMEZONE"
 
 # ---------------------------------------------------------------------------
 # 3) 用户与密码（上游语义：用户与 root 同密码）
@@ -117,9 +158,6 @@ systemctl enable NetworkManager.service || warn "启用 NetworkManager 失败"
 # ---------------------------------------------------------------------------
 case "$DESKTOP" in
   GNOME)
-    if [[ "$ROOTFS_BASE" == "holo-core" ]]; then
-      die "holo-core 源里没有 GNOME/gdm（请在 workflow 里改选 KDE Plasma 或 server）"
-    fi
     if [[ "$AUTOLOGIN" == "true" ]]; then
       log "配置 GDM 自动登录: $USERNAME"
       install -d /etc/gdm
@@ -134,60 +172,18 @@ EOF
     systemctl set-default graphical.target
     ;;
   "KDE Plasma")
-    # holo 模式下如果本仓库构建的 sddm 装上了（_packages.yml 的 build-sddm 作业），
-    # 就走和 ALARM 完全一样的 SDDM 路径；否则退回 systemd 直起 Plasma 会话的兜底方案。
-    if [[ "$ROOTFS_BASE" == "holo-core" ]] && ! command -v sddm >/dev/null 2>&1; then
-      # holo 源里没有 sddm：用 systemd 服务在 tty1 上直接拉起 Plasma Wayland 会话。
-      # autologin=true 时开机即进桌面；false 时保持 tty 登录，登录后手动
-      # `startplasma-wayland`（或在该用户 ~/.bash_profile 里自行 exec）。
-      systemctl set-default graphical.target
-      if [[ "$AUTOLOGIN" == "true" ]]; then
-        log "配置 Plasma 自动登录（holo 模式：无显示管理器，直接起 startplasma-wayland）"
-        cat > /etc/systemd/system/plasma-autologin.service <<EOF
-[Unit]
-Description=Plasma Wayland session for $USERNAME (archlinux-sheng, autologin without display manager)
-After=systemd-user-sessions.service systemd-logind.service
-Conflicts=getty@tty1.service
-After=getty@tty1.service
-
-[Service]
-Type=simple
-User=$USERNAME
-PAMName=login
-TTYPath=/dev/tty1
-StandardInput=tty
-StandardOutput=journal
-StandardError=journal
-WorkingDirectory=/home/$USERNAME
-Environment=XDG_SESSION_TYPE=wayland
-Environment=XDG_SESSION_CLASS=user
-Environment=XDG_SESSION_DESKTOP=KDE
-Environment=XDG_CURRENT_DESKTOP=KDE
-ExecStart=/usr/bin/dbus-run-session /usr/bin/startplasma-wayland
-Restart=on-failure
-RestartSec=3
-
-[Install]
-WantedBy=graphical.target
-EOF
-        systemctl enable plasma-autologin.service || die "启用 plasma-autologin.service 失败"
-      else
-        log "holo 模式：autologin=false，保持 tty 登录（登录后执行 startplasma-wayland）"
-      fi
-    else
-      if [[ "$AUTOLOGIN" == "true" ]]; then
-        if [[ "$PLASMA_MOBILE" == "true" ]]; then SDDM_SESSION="plasmamobile"; else SDDM_SESSION="plasma"; fi
-        log "配置 SDDM 自动登录: $USERNAME (session=$SDDM_SESSION)"
-        install -d /etc/sddm.conf.d
-        cat > /etc/sddm.conf.d/autologin.conf <<EOF
+    if [[ "$AUTOLOGIN" == "true" ]]; then
+      if [[ "$PLASMA_MOBILE" == "true" ]]; then SDDM_SESSION="plasmamobile"; else SDDM_SESSION="plasma"; fi
+      log "配置 SDDM 自动登录: $USERNAME (session=$SDDM_SESSION)"
+      install -d /etc/sddm.conf.d
+      cat > /etc/sddm.conf.d/autologin.conf <<EOF
 [Autologin]
 User=$USERNAME
 Session=$SDDM_SESSION
 EOF
-      fi
-      systemctl enable sddm.service || warn "启用 sddm 失败"
-      systemctl set-default graphical.target
     fi
+    systemctl enable sddm.service || warn "启用 sddm 失败"
+    systemctl set-default graphical.target
     ;;
   server)
     log "server 模式：不配置显示管理器"
