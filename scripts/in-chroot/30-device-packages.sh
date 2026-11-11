@@ -30,21 +30,6 @@ shopt -s nullglob
 pkgs=(/tmp/pkgs/*.pkg.tar.*)
 [[ "${#pkgs[@]}" -gt 0 ]] || die "/tmp/pkgs 下没有 .pkg.tar.*"
 
-# holo-core 源里没有 fprintd/libfprint（指纹栈），本仓库的 xiaomi-sheng-fingerprint
-# 依赖 fprintd，装不上。这里先剔除该包并明确告警，其余设备包照常安装。
-if [[ "${ROOTFS_BASE:-alarm}" == "holo-core" ]]; then
-  keep=()
-  for f in "${pkgs[@]}"; do
-    case "$(basename "$f")" in
-      xiaomi-sheng-fingerprint-*)
-        warn "holo-core 源缺 fprintd/libfprint，跳过指纹包: $(basename "$f")"
-        ;;
-      *) keep+=("$f") ;;
-    esac
-  done
-  pkgs=("${keep[@]}")
-  [[ "${#pkgs[@]}" -gt 0 ]] || die "剔除指纹包后没有可安装的设备包"
-fi
 
 log "待安装设备包（${#pkgs[@]} 个）："
 for f in "${pkgs[@]}"; do
@@ -68,6 +53,9 @@ done
 #      与元包冲突时**不会**顺带移除它的分包，而分包与本包文件路径会重叠
 #      （例如 ath12k/WCN7850/hw2.0/*），会让后面的 pacman -U 因文件冲突直接失败。
 #      因此这里显式移除全部 linux-firmware* 包，设备固件统一由本仓库的包提供。
+#    * fprintd / libfprint：本仓库自己编的版本与 ALARM 仓库同名同路径。
+#      base.list 已经不装 fprintd，但设备包里的 fprintd 依赖 libfprint，
+#      不能让仓库版本先被解析进来，所以这两个也在这里显式移除。
 #    * linux-aarch64：ALARM 的 rootfs tarball 预装的 stock 内核（无 sheng DTB）。
 #      linux-xiaomi-sheng 声明了 conflicts=('linux' 'linux-aarch64')，但 pacman 在
 #      `--noconfirm` 下对"是否移除冲突包"默认回答 N，实测报
@@ -75,7 +63,7 @@ done
 #        :: linux-xiaomi-sheng-... and linux-aarch64-... are in conflict (linux)
 #      所以必须在这里显式先删掉（-Rdd 跳过依赖检查）。
 # ---------------------------------------------------------------------------
-for name in libssc iio-sensor-proxy linux-aarch64 linux; do
+for name in libssc iio-sensor-proxy fprintd libfprint linux-aarch64; do
   if pac_installed "$name"; then
     warn "移除 $name（$(pac_version "$name")）：与本地包同名/冲突，改由本仓库提供"
     pacman -Rdd --noconfirm --color never "$name" || warn "移除 $name 失败（继续）"
@@ -129,27 +117,38 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 5) 服务启用（与上游一致；Arch 下由本步骤显式 enable）
+# 5) 服务启用
+#    清单在 scripts/lists/services.enable，90-verify.sh 用同一份做校验。
+#
+#    旧版在这儿手写 `if [[ -f … ]]; then systemctl enable …`，漏写一个没有任何提示：
+#    xiaomi-sheng-thp（触控）就是这样在整轮构建里静默缺席的，设备上只剩裸触控设备。
+#    现在 required 的 unit 缺文件直接失败。
+#
+#    清单里只放必须 enable 的 unit。靠 udev / D-Bus 激活的（iio-sensor-proxy、
+#    xiaomi-mipps-auth、keyboard-helper 的两个）没有 [Install] 段，不要写进来。
 # ---------------------------------------------------------------------------
-# 拼写务必照抄：unit 文件名与二进制都是 adsprpcd（a-d-s-p-r-p-c-d），
-# 上游 workflow 的 enable 步骤把它写成 adsrpcd（少一个 rp）→ 那个 unit 永远启用不了。
-# 这里**写死正确文件名**并先判断存在性（不要用通配符：adsrp*cd 与真实名在第 4 个字符
-# 就不同，永远匹配不上，会静默走 warn 分支）。
-if [[ -f /usr/lib/systemd/system/adsprpcd-sensorspd.service ]]; then
-  systemctl enable adsprpcd-sensorspd.service || warn "启用 adsprpcd-sensorspd 失败"
-else
-  warn "未找到 adsprpcd-sensorspd.service（fastrpc 包可能没装上）"
-fi
-if [[ -f /usr/lib/systemd/system/sheng-devauth.service ]]; then
-  systemctl enable sheng-devauth.service || warn "启用 sheng-devauth 失败"
-fi
-if [[ -f /usr/lib/systemd/system/xiaomi-mipps-auth.service ]]; then
-  systemctl enable xiaomi-mipps-auth.service || warn "启用 xiaomi-mipps-auth 失败"
-fi
-if [[ -f /usr/lib/systemd/user/xiaomi-sheng-keyboard-helper-micmute.service ]]; then
-  # user unit 需要 --global 才会对所有用户生效
-  systemctl --global enable xiaomi-sheng-keyboard-helper-micmute.service \
-    || warn "全局启用 xiaomi-sheng-keyboard-helper-micmute（user unit）失败"
-fi
+SERVICES_ENABLE="$BUILD_DIR/lists/services.enable"
+
+log "启用开机自启服务（scripts/lists/services.enable）"
+while read -r scope unit req; do
+  [[ -z "${scope:-}" || "$scope" == \#* ]] && continue
+  case "$scope" in system|global) ;; *) die "services.enable 格式错误: scope=$scope" ;; esac
+  case "$req" in required|optional) ;; *) die "services.enable 格式错误: requirement=$req" ;; esac
+
+  if [[ ! -e "/usr/lib/systemd/system/$unit" && ! -e "/usr/lib/systemd/user/$unit" ]]; then
+    if [[ "$req" == "required" ]]; then
+      die "必需的服务不存在: $unit（对应的包没有装上？见 services.enable）"
+    fi
+    warn "服务不存在，跳过启用: $unit（optional）"
+    continue
+  fi
+
+  if [[ "$scope" == "global" ]]; then
+    systemctl --global enable "$unit" || die "全局启用 $unit 失败"
+  else
+    systemctl enable "$unit" || die "启用 $unit 失败"
+  fi
+  log "  已启用: $unit"
+done < "$SERVICES_ENABLE"
 
 log "设备包安装完成"

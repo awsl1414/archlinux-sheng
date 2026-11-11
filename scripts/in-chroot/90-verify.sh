@@ -112,19 +112,51 @@ fi
 # ---------------------------------------------------------------------------
 # 4) locale
 # ---------------------------------------------------------------------------
-if [[ "${LANGUAGE:-None (C.UTF-8)}" != "None (C.UTF-8)" ]]; then
-  if grep -q "${LANGUAGE%% *}" /etc/locale.conf 2>/dev/null; then
-    pass "locale 已写入 /etc/locale.conf: $LANGUAGE"
-  else
-    fail "locale 未写入 /etc/locale.conf（期望 $LANGUAGE）"
-  fi
-  if [[ -f "/usr/lib/locale/locale-archive" ]] || [[ -d "/usr/lib/locale/${LANGUAGE}" ]]; then
-    pass "locale 已生成"
-  else
-    skip "未能确认 locale 是否生成（locale-archive 缺失），请人工确认"
-  fi
+# 系统语言 + 额外生成的 locale（GEN_LOCALES，逗号分隔，留空则只查系统语言）
+# 选 None 时系统 LANG 是 C.UTF-8，不是 ALARM tarball 自带的 C
+if [[ "${LANGUAGE:-None (C.UTF-8)}" == "None (C.UTF-8)" ]]; then
+  want_lang="C.UTF-8"
 else
-  skip "未选择语言（LANGUAGE=None），跳过 locale 校验"
+  want_lang="$LANGUAGE"
+fi
+
+if grep -qx "LANG=${want_lang}" /etc/locale.conf 2>/dev/null; then
+  pass "locale.conf: LANG=${want_lang}"
+else
+  fail "locale.conf 期望 LANG=${want_lang}，实际: $(tr '\n' ' ' < /etc/locale.conf 2>/dev/null)"
+fi
+
+# 用 locale 命令实测。注意不能只看 LANG= —— 未生成的 locale 也会被原样回显
+# （LANG=xx_YY.UTF-8 locale 会打印 LANG="xx_YY.UTF-8"，但 LC_CTYPE 退回 C）。
+# LC_CTYPE 反映实际生效值：locale 没生成时它是 C，不是我们期望的那个。
+check_locale() {
+  local l="$1" lc
+  lc="$(env -u LC_ALL -u LANGUAGE LANG="$l" locale 2>/dev/null \
+    | sed -n 's/^LC_CTYPE="\{0,1\}\([^"]*\)"\{0,1\}$/\1/p')"
+  if [[ "$lc" == "$l" ]]; then
+    pass "locale 可用: $l"
+  else
+    fail "locale 未生成: $l（LC_CTYPE 实际是 '$lc'）"
+  fi
+}
+
+check_locale "$want_lang"
+for l in ${GEN_LOCALES//,/ }; do
+  [[ -z "$l" || "$l" == "$want_lang" || "$l" == "C.UTF-8" ]] && continue
+  check_locale "$l"
+done
+
+# ---------------------------------------------------------------------------
+# 4.5) 时区
+#   systemd 只认 /etc/localtime 这个软链；/etc/timezone 是 Debian 的约定，不写。
+# ---------------------------------------------------------------------------
+: "${TIMEZONE:?需要 TIMEZONE}"
+if [[ -L /etc/localtime ]] && [[ "$(readlink /etc/localtime)" == "/usr/share/zoneinfo/$TIMEZONE" ]]; then
+  pass "/etc/localtime → /usr/share/zoneinfo/$TIMEZONE"
+elif [[ -L /etc/localtime ]]; then
+  fail "/etc/localtime 指向 $(readlink /etc/localtime)，期望 /usr/share/zoneinfo/$TIMEZONE"
+else
+  fail "/etc/localtime 不存在或不是符号链接"
 fi
 
 # ---------------------------------------------------------------------------
@@ -182,18 +214,42 @@ if [[ "$XIAOMI_COUNT" -eq 0 ]]; then
   warn "没有任何 xiaomi-* 包被安装（deb 下载或重打包可能失败，见 README「已知限制」）"
 fi
 
-# 服务必须处于 enabled（chroot 内 systemctl enable 只建软链，这里检查软链）
-for unit in adsprpcd-sensorspd.service sheng-devauth.service; do
-  if [[ -e "/etc/systemd/system/multi-user.target.wants/$unit" || -e "/etc/systemd/system/$unit" ]]; then
-    if systemctl is-enabled "$unit" >/dev/null 2>&1; then
-      pass "服务已启用: $unit"
-    else
-      fail "服务未启用: $unit"
+# ---------------------------------------------------------------------------
+# 6.5) 服务自启
+#   与 30-device-packages.sh 共用 scripts/lists/services.enable，口径只有一份。
+#
+#   旧写法用 `-e /etc/systemd/system/multi-user.target.wants/$unit` 判"已启用"，
+#   但 adsprpcd-sensorspd 的软链在 iio-sensor-proxy.service.wants/ 下、
+#   sheng-devauth 在 sysinit.target.wants/ 下 —— 两个判据都不成立，于是两个
+#   明明已启用的服务全被判成"服务不存在，跳过"（实跑日志就是这么写的）。
+#   systemctl is-enabled 直接问 systemd，不猜软链路径。
+# ---------------------------------------------------------------------------
+SERVICES_ENABLE="$BUILD_DIR/lists/services.enable"
+
+if [[ -f "$SERVICES_ENABLE" ]]; then
+  while read -r scope unit req; do
+    [[ -z "${scope:-}" || "$scope" == \#* ]] && continue
+    if [[ ! -e "/usr/lib/systemd/system/$unit" && ! -e "/usr/lib/systemd/user/$unit" ]]; then
+      if [[ "$req" == "required" ]]; then
+        fail "必需的服务文件不存在: $unit"
+      else
+        skip "服务不存在（optional）: $unit"
+      fi
+      continue
     fi
-  else
-    skip "服务不存在，跳过启用校验: $unit"
-  fi
-done
+    state="$(systemctl is-enabled "$unit" 2>/dev/null || true)"
+    case "$state" in
+      enabled|enabled-runtime|static|indirect|alias)
+        pass "服务已启用: $unit（$state）" ;;
+      disabled|linked|"")
+        fail "服务未启用: $unit（state=${state:-<空>}）" ;;
+      *)
+        fail "服务状态异常: $unit（$state）" ;;
+    esac
+  done < "$SERVICES_ENABLE"
+else
+  fail "缺少 $SERVICES_ENABLE（无法校验服务自启）"
+fi
 
 # ---------------------------------------------------------------------------
 # 7) 用户 / 自动登录 / 显示管理器
@@ -245,14 +301,7 @@ if [[ "${AUTOLOGIN:-false}" == "true" ]]; then
       [[ -f /etc/gdm/custom.conf ]] && pass "GDM 自动登录已配置" || fail "缺少 /etc/gdm/custom.conf"
       ;;
     "KDE Plasma")
-      if [[ "${ROOTFS_BASE:-alarm}" == "holo-core" ]] && ! command -v sddm >/dev/null 2>&1; then
-        # holo 无显示管理器时的兜底路径（sddm 未装上）：由 plasma-autologin.service 起会话
-        systemctl is-enabled plasma-autologin.service >/dev/null 2>&1 \
-          && pass "Plasma 自动登录服务已启用（holo 模式，无显示管理器）" \
-          || fail "缺少已启用的 plasma-autologin.service"
-      else
-        [[ -f /etc/sddm.conf.d/autologin.conf ]] && pass "SDDM 自动登录已配置" || fail "缺少 /etc/sddm.conf.d/autologin.conf"
-      fi
+      [[ -f /etc/sddm.conf.d/autologin.conf ]] && pass "SDDM 自动登录已配置" || fail "缺少 /etc/sddm.conf.d/autologin.conf"
       ;;
   esac
 fi
@@ -266,17 +315,7 @@ case "${DESKTOP:-server}" in
     fi
     ;;
   "KDE Plasma")
-    if [[ "${ROOTFS_BASE:-alarm}" == "holo-core" ]] && command -v sddm >/dev/null 2>&1; then
-      systemctl is-enabled sddm.service >/dev/null 2>&1 \
-        && pass "sddm 已启用（holo 模式：本仓库构建的 sddm 包）" \
-        || fail "sddm 已安装但未启用"
-    elif [[ "${ROOTFS_BASE:-alarm}" == "holo-core" ]]; then
-      if [[ "${AUTOLOGIN:-false}" == "true" ]] && ! systemctl is-enabled plasma-autologin.service >/dev/null 2>&1; then
-        fail "plasma-autologin.service 未启用"
-      else
-        pass "holo 模式：无显示管理器（Plasma 会话由 systemd 拉起）"
-      fi
-    elif systemctl is-enabled sddm.service >/dev/null 2>&1; then
+    if systemctl is-enabled sddm.service >/dev/null 2>&1; then
       pass "sddm 已启用"
     else
       fail "sddm 未启用"

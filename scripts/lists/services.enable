@@ -1,0 +1,37 @@
+# 需要开机自启的 systemd unit —— 声明式清单
+#
+# 格式（空白分隔，一行一条，# 开头为注释）：
+#   <scope> <unit> <requirement>
+#     scope       system = systemctl enable
+#                 global = systemctl --global enable（user unit）
+#     requirement required = 包装上了就必须存在，缺文件直接让构建失败
+#                  optional  = 上游 deb 可能下载失败（见 fetch-xiaomi-debs.sh），缺了只告警
+#
+# 为什么要有这份清单：
+#   * 旧版是在 30-device-packages.sh 里用一串 `if [[ -f … ]]; then systemctl enable …` 手写的。
+#     漏写一个不会有任何提示 —— xiaomi-sheng-thp（触控）就是这样在整轮构建里静默缺席的。
+#   * 90-verify.sh 用同一份清单做校验，避免"启用逻辑"和"校验逻辑"各维护一份、口径不一。
+#
+# 只写"必须靠 enable 才会跑"的 unit。靠 udev / D-Bus / 别人 Requires 激活的
+# （iio-sensor-proxy、xiaomi-mipps-auth、keyboard-helper 的两个）不要写进来：
+# 它们没有 [Install] 段，enable 会得到 systemd 的 "no installation config"
+# notice 并返回 0，看起来像成功。
+
+# 传感器：aDSP 上的 sensorspd，iio-sensor-proxy 通过 Wants= 依赖它
+system  adsprpcd-sensorspd.service   required
+# 键盘认证（官方磁吸键盘），sysinit.target 级别
+system  sheng-devauth.service        required
+# 指纹：QTEE 安全文件系统配置 + TEE listener。
+#   这两个 unit 来自 xiaomi-sheng-fingerprint 的 deb，而六个 xiaomi-* deb 的下载
+#   是"失败可容忍"的（scripts/packages/fetch-xiaomi-debs.sh）。所以标 optional：
+#   包没下到时只告警，不让整轮构建失败。
+#   sheng-devauth 的 Requires= 会顺带拉起 qteesupplicant，但那是借来的依赖 ——
+#   键盘认证包一旦缺失，指纹就跟着哑了，所以显式启用。
+system  sfsconfig.service            optional
+system  qteesupplicant.service       optional
+# 触控：NT36532E 用户态处理器（内核 /proc/nvt_thp_* → uinput）。
+#   没有它就没有多点触控与 Focus Pen；它同时 Wants=bluetooth.service，
+#   也是蓝牙服务唯一的启用来源。
+system  xiaomi-sheng-thp.service     optional
+# 关机充电界面（ConditionKernelCommandLine=androidboot.mode=charger 自行判断是否真的跑）
+system  xiaomi-charger-mode.service  optional
