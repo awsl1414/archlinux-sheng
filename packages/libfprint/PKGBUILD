@@ -28,7 +28,15 @@ url="https://fprint.freedesktop.org/"
 license=('LGPL-2.1-or-later')
 depends=('glib2' 'glibc' 'gcc-libs' 'libgudev' 'libgusb' 'openssl' 'pixman')
 makedepends=('meson' 'ninja' 'git' 'systemd' 'glib2-devel')
-provides=('libfprint-2.so')
+# 与 ALARM extra 的 libfprint 同名同路径。只写 provides=('libfprint-2.so') 时，
+#   pacman 只按包名判冲突，于是 base.list 里的依赖会把 ALARM 的 libfprint 1.94.100
+#   装进来，到设备包阶段再被本地 1.94.10 降级。
+#   provides 里加上包名本身，让"需要 libfprint 的包"能解析到本地包；
+#   replaces 让 pacman 在安装本地包时替换已有的仓库版。
+#   不写 conflicts=('libfprint')：pacman 会用这个名字去匹配别的包，
+#   而本地包自身的名字也是 libfprint，属于多此一举。
+provides=('libfprint' 'libfprint-2.so')
+replaces=('libfprint')
 options=('!strip' '!debug' '!lto')
 source=("libfprint-v$pkgver.tar.gz::https://gitlab.freedesktop.org/libfprint/libfprint/-/archive/v$pkgver/libfprint-v$pkgver.tar.gz")
 sha256sums=('SKIP')

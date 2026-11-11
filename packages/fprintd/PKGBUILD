@@ -23,6 +23,10 @@ url="https://fprint.freedesktop.org/"
 license=('GPL-2.0-or-later')
 depends=('dbus' 'glib2' 'glibc' 'gcc-libs' 'libfprint' 'pam' 'polkit' 'systemd' 'systemd-libs')
 makedepends=('meson' 'ninja' 'git' 'systemd' 'pam' 'glib2-devel')
+# 与 ALARM extra 的 fprintd 同名同路径：provides 让依赖解析到本地包，
+# replaces 让 pacman 安装本地包时替换已有的仓库版。不写 conflicts（同名自排斥）。
+provides=('fprintd')
+replaces=('fprintd')
 options=('!strip' '!debug' '!lto')
 source=("fprintd-v$pkgver.tar.gz::https://gitlab.freedesktop.org/libfprint/fprintd/-/archive/v$pkgver/fprintd-v$pkgver.tar.gz")
 sha256sums=('SKIP')

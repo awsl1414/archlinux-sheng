@@ -53,5 +53,8 @@ libqrtr-glib
 libgudev
 polkit
 libgusb
-fprintd
+# fprintd 不在这里装：本仓库自己编的 fprintd / libfprint 与 ALARM 仓库版本
+#   同名同路径。若在基础阶段先装仓库版，设备包阶段会降级
+#   （fprintd 1.94.5-2 → 1.94.5-1、libfprint 1.94.100 → 1.94.10），白下一轮 400 MB。
+#   fprintd 由设备包在同一事务里一起装。
 libpulse
