@@ -29,8 +29,22 @@ SHRINK_IMAGE="${SHRINK_IMAGE:-true}"
 #   收缩好的镜像，卸载失败就等于失败。
 #   03-umount-chroot.sh 只卸 chroot 的虚拟文件系统，镜像本身在这里卸。
 # ---------------------------------------------------------------------------
-umount -R "$MOUNT" 2>/dev/null || true
-mountpoint -q "$MOUNT" && die "无法卸载 $MOUNT：镜像仍在挂载"
+# 两级卸载：先递归（清掉 chroot 阶段可能残留的子挂载），再直接卸本身。
+# 只留 -R 会失败：递归卸载在某些内核状态下会因残留的 mount 记录报 busy，
+# 而普通的 umount 反而能成功 —— 2026-11-11 那次构建就是这么挂的。
+umount_out="$(
+  umount -R "$MOUNT" 2>&1 || umount "$MOUNT" 2>&1
+)" || true
+if mountpoint -q "$MOUNT"; then
+  # 失败时把 umount 报错、挂载点归属、占用进程全打出来。
+  # 没有这些信息，下一轮失败还是只能看到"仍在挂载"。
+  [[ -n "$umount_out" ]] && printf '%s\n' "$umount_out" | sed 's/^/    /' >&2
+  echo "  $MOUNT 的挂载信息：" >&2
+  awk -v m="$MOUNT" 'index($5, m)==1 {print "    "$5" ("$9")"}' /proc/self/mountinfo >&2
+  echo "  占用 $MOUNT 的进程：" >&2
+  fuser -vm "$MOUNT" 2>&1 | sed 's/^/    /' >&2 || echo "    （fuser 不可用或无进程）" >&2
+  die "无法卸载 $MOUNT：镜像仍在挂载"
+fi
 sync
 log "镜像已卸载"
 

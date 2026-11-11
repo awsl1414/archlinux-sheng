@@ -158,6 +158,13 @@ deb_extract_payload() {
   bsdtar -xpf "$data" -C "$dest"
   # 清掉误带入的打包目录
   rm -rf "$dest/DEBIAN"
+
+  # Debian 的目录权限普遍是 775，Arch 是 755。不归一化的话，pacman 安装时会打
+  #   warning: directory permissions differ on /usr/lib/: filesystem: 755  package: 775
+  # 而且包**新建**的目录（如 /usr/lib/xiaomi-sheng-fingerprint）会真的留在 775 ——
+  # 组可写，比 Arch 惯例宽。只规范目录，文件权限保持原样。
+  find "$dest" -mindepth 1 -type d -exec chmod 755 {} +
+
   _deb_normalize_layout "$dest"
 }
 
