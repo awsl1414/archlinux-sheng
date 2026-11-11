@@ -12,6 +12,46 @@ require_root
 
 MOUNT="${1:-/mnt/rootfs}"
 
+# ---------------------------------------------------------------------------
+# 杀掉 chroot 里残留的进程
+#   chroot 阶段跑过 pacman-key / gpg，这些工具会留下常驻的 gpg-agent：
+#   它的 cwd 或打开的 fd 仍在镜像内，导致 umount 报 "target is busy"。
+#   2026-11-11 那次构建的失败就是这个（fuser 显示 root 2934 gpg-agent）。
+#   只杀"可执行文件路径在 $MOUNT 内"的进程，不碰宿主自己的 gpg-agent。
+# ---------------------------------------------------------------------------
+stale=()
+for pid in /proc/[0-9]*; do
+  pid="${pid#/proc/}"
+  exe="$(readlink "/proc/$pid/exe" 2>/dev/null)" || continue
+  root="$(readlink "/proc/$pid/root" 2>/dev/null)" || continue
+  case "$exe$root" in
+    "$MOUNT"*)
+      stale+=("$pid")
+      ;;
+  esac
+done
+
+if [[ "${#stale[@]}" -gt 0 ]]; then
+  log "清理 chroot 内残留进程（${#stale[@]} 个）：${stale[*]}"
+  for pid in "${stale[@]}"; do
+    printf '    PID %-6s %s\n' "$pid" "$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null | cut -c1-80)"
+  done
+  kill -TERM "${stale[@]}" 2>/dev/null || true
+  # 给它们一点时间退出，仍活着的补 KILL
+  alive=("${stale[@]}")
+  for _ in 1 2 3 4 5; do
+    next=()
+    for pid in "${alive[@]}"; do [[ -d "/proc/$pid" ]] && next+=("$pid"); done
+    alive=("${next[@]}")
+    [[ "${#alive[@]}" -eq 0 ]] && break
+    sleep 1
+  done
+  if [[ "${#alive[@]}" -gt 0 ]]; then
+    warn "以下进程 TERM 后仍在，改用 KILL：${alive[*]}"
+    kill -KILL "${alive[@]}" 2>/dev/null || true
+  fi
+fi
+
 # 用 -R 递归卸载，这样 /dev 下的子挂载（/dev/pts 等）会一起清掉，
 # 不需要单独列 dev/pts；顺序也不再重要。
 for d in dev proc sys; do

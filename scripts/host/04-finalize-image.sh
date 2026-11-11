@@ -32,9 +32,11 @@ SHRINK_IMAGE="${SHRINK_IMAGE:-true}"
 # 两级卸载：先递归（清掉 chroot 阶段可能残留的子挂载），再直接卸本身。
 # 只留 -R 会失败：递归卸载在某些内核状态下会因残留的 mount 记录报 busy，
 # 而普通的 umount 反而能成功 —— 2026-11-11 那次构建就是这么挂的。
+# chroot 内残留的进程（gpg-agent 之类）由 03-umount-chroot.sh 负责清理。
 umount_out="$(
   umount -R "$MOUNT" 2>&1 || umount "$MOUNT" 2>&1
 )" || true
+
 if mountpoint -q "$MOUNT"; then
   # 失败时把 umount 报错、挂载点归属、占用进程全打出来。
   # 没有这些信息，下一轮失败还是只能看到"仍在挂载"。
