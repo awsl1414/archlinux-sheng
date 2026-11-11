@@ -25,10 +25,9 @@ REPO_ROOT="$(cd "$HERE/../.." && pwd)"
 
 [[ -d "$MOUNT" ]] || die "挂载点不存在: $MOUNT"
 
-# 挂载点目录必须存在：ALARM 的 tarball 自带 /dev /proc /sys，但 holo-core 的
-# system.rootfs.zst 只含 usr/etc/var 等，缺这几个（实测报
-#   mount: /mnt/rootfs/dev: mount point does not exist）
-# 因此两种底包都先补齐目录与权限。
+# 挂载点目录必须存在：ALARM 的 tarball 自带 /dev /proc /sys，但覆盖安装时
+# 也可能缺其中几个（实测报 mount: /mnt/rootfs/dev: mount point does not exist）
+# 因此先统一补齐目录与权限。
 for d in dev dev/pts dev/shm proc sys run tmp var/tmp root mnt home srv opt; do
   install -d "$MOUNT/$d"
 done
@@ -49,13 +48,6 @@ install -d "$MOUNT/root/sheng-build"
 cp -a "$REPO_ROOT/scripts/common"    "$MOUNT/root/sheng-build/"
 cp -a "$REPO_ROOT/scripts/in-chroot" "$MOUNT/root/sheng-build/"
 cp -a "$REPO_ROOT/scripts/lists"     "$MOUNT/root/sheng-build/"
-# 底包专用包列表（holo-core 用 scripts/lists-holo，见 common/distro-env.sh 的 LISTS_DIR）：
-# 在镜像内统一叫 lists/，这样 in-chroot 脚本不必关心底包差异。
-if [[ "$LISTS_DIR" != "lists" && -d "$REPO_ROOT/scripts/$LISTS_DIR" ]]; then
-  rm -rf "${MOUNT:?}/root/sheng-build/lists"
-  cp -a "$REPO_ROOT/scripts/$LISTS_DIR" "$MOUNT/root/sheng-build/lists"
-  log "包列表目录: scripts/$LISTS_DIR（底包 $ROOTFS_BASE）"
-fi
 chmod -R 755 "$MOUNT/root/sheng-build"
 
 # 设备包 .pkg.tar.* 入镜像 /tmp/pkgs

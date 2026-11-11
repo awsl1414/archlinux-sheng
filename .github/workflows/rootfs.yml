@@ -85,6 +85,28 @@ on:
           - 'fr_FR.UTF-8'
           - 'es_ES.UTF-8'
           - 'ru_RU.UTF-8'
+      gen_locales:
+        description: '额外生成的 locale，逗号分隔，留空则只生成系统语言。例：zh_CN.UTF-8,ja_JP.UTF-8。可选值与系统语言相同'
+        required: false
+        type: string
+        default: ''
+      timezone:
+        description: '系统时区'
+        required: false
+        type: choice
+        default: 'Asia/Shanghai'
+        options:
+          - 'Asia/Shanghai'
+          - 'Asia/Hong_Kong'
+          - 'Asia/Taipei'
+          - 'Asia/Tokyo'
+          - 'Asia/Seoul'
+          - 'Asia/Singapore'
+          - 'Europe/London'
+          - 'Europe/Berlin'
+          - 'America/New_York'
+          - 'America/Los_Angeles'
+          - 'UTC'
       boot_mode:
         description: '启动分区模式'
         required: true
@@ -121,17 +143,22 @@ on:
         description: '内核分支'
         required: false
         type: string
-        default: 'sheng-7.2.6'
+        default: 'sheng-7.3.0'
       kernel_config:
         description: '内核配置文件（仓库内文件名）'
         required: false
         type: string
         default: 'sm8550.config'
+      kernel_localversion:
+        description: '钉住的 LOCALVERSION（custom_build 用）。必须与 kernel_release 的 deb 一致，否则模块与 boot.img 的 vermagic 不匹配'
+        required: false
+        type: string
+        default: '-sm8550-00104-g1fb56e66091e'
       kernel_release:
         description: 'prebuilt 内核取哪个 release（留空则取最新；固定版本可复现构建）'
         required: false
         type: string
-        default: '7.2.6'
+        default: '7.3.0'
       firmware_repo:
         description: '设备固件仓库'
         required: false
@@ -172,6 +199,7 @@ jobs:
       kernel_repo: ${{ inputs.kernel_repo }}
       kernel_branch: ${{ inputs.kernel_branch }}
       kernel_config: ${{ inputs.kernel_config }}
+      kernel_localversion: ${{ inputs.kernel_localversion }}
       # 预编译内核必须与 boot.img 同一个 release tag，否则 rootfs 模块版本与内核 vermagic 错配 → 黑屏
       kernel_release: ${{ inputs.kernel_release }}
       firmware_repo: ${{ inputs.firmware_repo }}
@@ -202,19 +230,13 @@ jobs:
           IN_DESKTOP: ${{ inputs.desktop }}
           IN_PLASMA_MOBILE: ${{ inputs.plasma_mobile }}
           IN_QUIET_BOOT: ${{ inputs.quiet_boot }}
+          IN_GEN_LOCALES: ${{ inputs.gen_locales }}
         run: |
-          # 底包能力检查：holo-core 源里没有 GNOME/gdm、plasma-mobile、plymouth，
-          # 与其在安装阶段装不上再失败，不如在这里明确报错。
-          if [ "$ROOTFS_BASE" = "holo-core" ]; then
-            case "$IN_DESKTOP" in
-              GNOME) echo "::error::holo-core 源里没有 GNOME（缺 gnome-shell/gdm），请选 KDE Plasma 或 server"; exit 1 ;;
-            esac
-            if [ "$IN_PLASMA_MOBILE" = "true" ]; then
-              echo "::error::holo-core 源里没有 plasma-mobile，请用 plasma-desktop（plasma_mobile=false）"; exit 1
-            fi
-            if [ "$IN_QUIET_BOOT" = "true" ] && [ "$IN_DESKTOP" != "server" ]; then
-              echo "::warning::holo-core 源里没有 plymouth，本次构建将不安装开机画面（quiet_boot 被忽略）"
-            fi
+          # holo-core 底包的脚本在 e960212 里删除了（holo-lib.sh / 01b-bootstrap-holo.sh /
+          # lists-holo/）。这里提前拒绝，避免跑到一半才因为缺文件失败。
+          if [ "$ROOTFS_BASE" != "alarm" ]; then
+            echo "::error::rootfs_base=$ROOTFS_BASE 已不支持，请用 alarm"
+            exit 1
           fi
           # 密码优先级：password 输入项 > ROOTFS_PASSWORD secret > 默认 password。
           # 输入项不是 secret（会明文显示在本次运行的输入摘要里），因此立刻 add-mask，
@@ -254,6 +276,10 @@ jobs:
           case "$IN_HOSTNAME" in
             ""|*[!a-zA-Z0-9.-]*) echo "::error::hostname 只允许字母数字与 . -"; exit 1 ;;
           esac
+          # gen_locales 是自由输入，校验字符集，避免把奇怪内容写进 build.env
+          case "$IN_GEN_LOCALES" in
+            *[!a-zA-Z0-9._,\ -]*) echo "::error::gen_locales 含非法字符: $IN_GEN_LOCALES"; exit 1 ;;
+          esac
 
       - name: Parse Arguments
         id: parse
@@ -261,10 +287,6 @@ jobs:
           QUIET="false"
           if [ "${{ inputs.quiet_boot }}" = "true" ] && [ "${{ inputs.desktop }}" != "server" ]; then
             QUIET="true"
-          fi
-          # holo-core 源里没有 plymouth，静默启动无法实现 → 强制关闭
-          if [ "$ROOTFS_BASE" = "holo-core" ]; then
-            QUIET="false"
           fi
 
           case "${{ inputs.boot_mode }}" in
@@ -287,13 +309,7 @@ jobs:
           esac
 
           SLUG="$(printf '%s' "${{ inputs.desktop }}" | tr ' ' '-')"
-
-          # 浏览器：holo-core 源里没有 firefox（也没有 chromium），只支持不装
           BROWSER="${{ inputs.browser }}"
-          if [ "$ROOTFS_BASE" = "holo-core" ] && [ "$BROWSER" != "none" ]; then
-            echo "::warning::holo-core 源里没有 ${BROWSER}，本次构建不安装浏览器（browser 输入被忽略）"
-            BROWSER="none"
-          fi
 
           {
             echo "label=${LABEL}"
@@ -374,13 +390,6 @@ jobs:
       - name: Collect sheng-devauth
         uses: actions/download-artifact@v8
         with: { name: sheng-devauth-pkg, path: pkgs }
-      # SDDM（显示管理器）：只有 holo-core 模式需要 —— Holo 源里没有任何显示管理器，
-      # 由本仓库自己 makepkg 构建（见 _packages.yml 的 build-sddm 作业 + packages/sddm/）。
-      - name: Collect sddm (holo-core only, optional)
-        if: inputs.rootfs_base == 'holo-core'
-        continue-on-error: true
-        uses: actions/download-artifact@v8
-        with: { name: sddm-pkg, path: pkgs }
       - name: Collect alsa-xiaomi-sheng
         uses: actions/download-artifact@v8
         with: { name: alsa-xiaomi-sheng-pkg, path: pkgs }
@@ -440,23 +449,15 @@ jobs:
         env:
           ALARM_TARBALL_URL: http://os.archlinuxarm.org/os/ArchLinuxARM-aarch64-latest.tar.gz
           ALARM_MIRROR: http://mirror.archlinuxarm.org
-          HOLO_SNAPSHOT: mash-20251118.3
         run: |
-          if [ "$ROOTFS_BASE" = "holo-core" ]; then
-            chmod +x scripts/host/01b-bootstrap-holo.sh
-            sudo env ROOTFS_BASE="$ROOTFS_BASE" HOLO_SNAPSHOT="$HOLO_SNAPSHOT" \
-              bash scripts/host/01b-bootstrap-holo.sh "$ROOTFS_MOUNT"
-          else
-            chmod +x scripts/host/01-bootstrap-arch.sh
-            sudo env ROOTFS_BASE="$ROOTFS_BASE" ALARM_TARBALL_URL="$ALARM_TARBALL_URL" ALARM_MIRROR="$ALARM_MIRROR" \
-              bash scripts/host/01-bootstrap-arch.sh "$ROOTFS_MOUNT"
-          fi
+          chmod +x scripts/host/01-bootstrap-arch.sh
+          sudo env ROOTFS_BASE="$ROOTFS_BASE" ALARM_TARBALL_URL="$ALARM_TARBALL_URL" ALARM_MIRROR="$ALARM_MIRROR" \
+            bash scripts/host/01-bootstrap-arch.sh "$ROOTFS_MOUNT"
 
       - name: Mount Chroot Environment
         run: |
           chmod +x scripts/host/02-mount-chroot.sh
-          # ROOTFS_BASE 必须透传：脚本按它选择 scripts/lists 还是 scripts/lists-holo
-          # （sudo 会重置环境，不显式传就会退回默认的 ALARM 包列表）
+          # ROOTFS_BASE 必须透传（sudo 会重置环境，脚本要靠它选底包地址与镜像源）
           sudo env ROOTFS_BASE="$ROOTFS_BASE" bash scripts/host/02-mount-chroot.sh "$ROOTFS_MOUNT" boot.img
 
       - name: Write Build Environment
@@ -469,6 +470,8 @@ jobs:
           USERNAME='${{ inputs.username }}'
           HOSTNAME='${{ inputs.hostname }}'
           LANGUAGE='${{ inputs.language }}'
+          GEN_LOCALES='${{ inputs.gen_locales }}'
+          TIMEZONE='${{ inputs.timezone }}'
           QUIET_BOOT='${{ steps.parse.outputs.quiet_boot_enabled }}'
           BOOT_MODE='${{ inputs.boot_mode }}'
           PARTITION_LABEL='${{ steps.parse.outputs.label }}'

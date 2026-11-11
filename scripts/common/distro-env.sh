@@ -6,10 +6,8 @@
 # 因此这里不再有 DISTRO_SERIES / DISTRO_SUITE，改为集中维护底包地址、镜像地址
 # 与架构常量，避免散落在 workflow YAML 里。
 #
-# 两种底包（由 ROOTFS_BASE 选择，见下）：
-#   * alarm      —— Arch Linux ARM 官方滚动 tarball + ALARM core/extra/alarm 仓库（默认）
-#   * holo-core  —— Valve/Collabora 的 Holo Core（Steam Frame 的 Arch Linux aarch64 预览）
-#                   rootfs 底座 + holo-packages 的 core/extra 仓库
+# 底包：目前只支持 alarm（Arch Linux ARM 官方滚动 tarball + core/extra/alarm 仓库）。
+# holo-core 底包在 e960212 里移除了相关脚本，ROOTFS_BASE=holo-core 会直接报错。
 
 log()  { printf '[%s] %s\n' "${0##*/}" "$*"; }
 warn() { printf '[%s] 警告: %s\n' "${0##*/}" "$*" >&2; }
@@ -34,8 +32,12 @@ export ARCH="${ARCH:-aarch64}"
 export ROOTFS_BASE="${ROOTFS_BASE:-alarm}"
 case "$ROOTFS_BASE" in
   alarm)             export ROOTFS_BASE="alarm" ;;
-  holo|holo-core)    export ROOTFS_BASE="holo-core" ;;
-  *) die "不支持的 ROOTFS_BASE: $ROOTFS_BASE（可选 alarm | holo-core）" ;;
+  holo|holo-core)
+    # holo-core 底包在 e960212 里被移除：holo-lib.sh、01b-bootstrap-holo.sh、
+    # scripts/lists-holo/ 都已删除。保留这个分支只会让构建跑到一半才因为
+    # "找不到 holo-lib.sh" 或 "包列表不存在" 失败，不如在这里说清楚。
+    die "rootfs_base=holo-core 已不支持：相关脚本（scripts/host/holo-lib.sh、01b-bootstrap-holo.sh、scripts/lists-holo/）已删除。请使用 rootfs_base=alarm" ;;
+  *) die "不支持的 ROOTFS_BASE: $ROOTFS_BASE（可选 alarm）" ;;
 esac
 
 # ---------------------------------------------------------------------------
@@ -47,32 +49,10 @@ export ALARM_TARBALL_URL="${ALARM_TARBALL_URL:-http://os.archlinuxarm.org/os/Arc
 export ALARM_MIRROR="${ALARM_MIRROR:-http://mirror.archlinuxarm.org}"
 
 # ---------------------------------------------------------------------------
-# Holo Core（Valve/Collabora 的 Steam Frame aarch64 预览；内容冻结在 Arch 2025-11 状态）
-#   rootfs：system.rootfs.zst（base + base-devel 底座，无内核镜像/DTB/桌面）
-#   仓库：  <HOLO_MIRROR>/$repo/os/$arch，只有 core 与 extra，SigLevel = Optional
-# ---------------------------------------------------------------------------
-export HOLO_SNAPSHOT="${HOLO_SNAPSHOT:-mash-20251118.3}"
-export HOLO_BASE_URL="${HOLO_BASE_URL:-https://holo-packages.steamos.cloud/holo-core-aarch64-preview}"
-export HOLO_ROOTFS_URL="${HOLO_ROOTFS_URL:-${HOLO_BASE_URL}/${HOLO_SNAPSHOT}/system.rootfs.zst}"
-export HOLO_MIRROR="${HOLO_MIRROR:-${HOLO_BASE_URL}/${HOLO_SNAPSHOT}}"
-
-# ---------------------------------------------------------------------------
 # 宿主上可复用的构建 chroot（供 makepkg 使用，见 host/20-alarm-chroot.sh）
-#   两种底分开存放，避免快照缓存互相污染（holo 底 glibc 2.42 / ALARM 已 2.43）
 # ---------------------------------------------------------------------------
 export ALARM_CHROOT="${ALARM_CHROOT:-/mnt/alarm}"
-export HOLO_CHROOT="${HOLO_CHROOT:-/mnt/holo}"
-
-if [[ "$ROOTFS_BASE" == "holo-core" ]]; then
-  export BUILD_CHROOT="${BUILD_CHROOT:-$HOLO_CHROOT}"
-  export CHROOT_SNAPSHOT_TAG="holo-core-${HOLO_SNAPSHOT}"
-  # holo 源缺 chrony/fprintd/sddm/kate/gnome/plymouth，用专门的包列表（见 scripts/lists-holo/）
-  export LISTS_DIR="${LISTS_DIR:-lists-holo}"
-else
-  export BUILD_CHROOT="${BUILD_CHROOT:-$ALARM_CHROOT}"
-  export CHROOT_SNAPSHOT_TAG="alarm"
-  export LISTS_DIR="${LISTS_DIR:-lists}"
-fi
+export BUILD_CHROOT="${BUILD_CHROOT:-$ALARM_CHROOT}"
 
 # chroot 内可选的 AUR 源码包（官方仓库里没有的包）
 # 语法：<包名>|<git 仓库 URL>，多个用空格分隔。默认留空。

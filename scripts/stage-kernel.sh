@@ -37,6 +37,20 @@ fi
 
 install -Dm644 "$CFG" "$SRC/.config"
 
+# 版本号必须与上游 release 的 deb 一致（7.3.0-sm8550-00104-g1fb56e66091e），
+# 否则 custom_build 产出的模块与 prebuilt 的 boot.img 内核 vermagic 不匹配。
+# 上游的 `7.3.0` 是轻量 tag 且正好指向 HEAD，setlocalversion 只认 annotated tag，
+# 用 --depth 1 克隆时又拿不到提交计数，算出来会缺 `00104`。
+# 所以钉住完整版本号：LOCALVERSION 写死，关掉 AUTO。
+if [[ -n "${KERNEL_LOCALVERSION:-}" ]]; then
+  echo "[stage-kernel] 钉住 LOCALVERSION=$KERNEL_LOCALVERSION"
+  sed -i -E 's|^CONFIG_LOCALVERSION=.*|CONFIG_LOCALVERSION="-'"${KERNEL_LOCALVERSION#-}"'"|;
+             s|^CONFIG_LOCALVERSION_AUTO=y|# CONFIG_LOCALVERSION_AUTO is not set|' "$SRC/.config"
+  rm -f "$SRC/include/config/auto.conf" "$SRC/include/config/auto.conf.cmd" \
+        "$SRC/include/generated/autoconf.h"
+  make -C "$SRC" ARCH=arm64 LLVM=1 syncconfig >/dev/null
+fi
+
 echo "[stage-kernel] 编译内核 (JOBS=$JOBS)"
 make -C "$SRC" -j"$JOBS" ARCH=arm64 LLVM=1
 
