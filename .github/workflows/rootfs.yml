@@ -197,6 +197,9 @@ jobs:
     name: Build Device Packages (pacman)
     uses: ./.github/workflows/_packages.yml
     with:
+      # 必传：_packages.yml 的 source_repo 默认是上游 code002-2/archlinux-sheng，
+      # 不传的话所有包作业都会去克隆上游，本仓库新增的包（如元包）在其中不存在
+      source_repo: ${{ github.repository }}
       kernel_source: ${{ inputs.kernel_source }}
       kernel_repo: ${{ inputs.kernel_repo }}
       kernel_branch: ${{ inputs.kernel_branch }}
