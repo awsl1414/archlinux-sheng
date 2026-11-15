@@ -564,6 +564,19 @@ jobs:
           compression-level: 1
           if-no-files-found: warn
 
+      # 与上面同一个 boot.img，单独传一份给 publish-repo：仓库升级内核后，设备的
+      # boot 分区不会跟着变，必须有人手动刷与之匹配的 boot.img。用工件名里的
+      # 内核版本 + 分区标签，让用户能按版本找回正确的文件。
+      - name: Upload Boot Image for repo
+        if: success() && inputs.kernel_source != 'custom_build'
+        uses: actions/upload-artifact@v7
+        with:
+          name: repo-boot-${{ inputs.kernel_release }}-${{ steps.parse.outputs.label }}
+          path: boot.img
+          retention-days: 14
+          compression-level: 1
+          if-no-files-found: error
+
       - name: Build Summary
         if: always()
         run: |
@@ -627,7 +640,13 @@ jobs:
           mkdir -p repo-out
           if gh release view repo >/dev/null 2>&1; then
             echo "发现已有 repo release，拉取上一版数据库与包"
-            gh release download repo --dir repo-out --skip-existing --pattern '*' || true
+            # 不拉 boot 镜像：repo-out 是本次要发布的内容，旧 boot.img 混进来会被
+            # 当成"本次发布"而跳过清理、再被原样上传回去
+            gh release download repo --dir repo-out --skip-existing \
+              --pattern '*.pkg.tar.*' \
+              --pattern 'sheng.db' --pattern 'sheng.db.tar.gz' \
+              --pattern 'sheng.files' --pattern 'sheng.files.tar.gz' \
+              --pattern 'sheng.conf' || true
             ls -1 repo-out | sed 's/^/    /' | head -n 50
           else
             echo "尚未创建 repo release，本次为首版"
@@ -639,6 +658,12 @@ jobs:
           pattern: '*-pkg*'
           merge-multiple: true
           path: pkgs
+
+      - name: Collect boot image
+        uses: actions/download-artifact@v8
+        with:
+          pattern: 'repo-boot-*'
+          path: boot-img
 
       - name: Verify collected packages
         run: |
@@ -662,6 +687,23 @@ jobs:
           chmod +x scripts/host/23-repo-publish.sh
           scripts/host/23-repo-publish.sh pkgs repo-out sheng
 
+      # 内核包升级后设备的 boot 分区不会跟着变，重开机时内核模块与 boot.img 的
+      # vermagic 不匹配会直接黑屏。这里把本次构建用的 boot.img 一起发布，文件名带
+      # 内核版本与分区标签，README 要求升级内核的人下载对应文件重刷。
+      - name: Publish boot image
+        run: |
+          src="$(find boot-img -mindepth 2 -maxdepth 2 -name boot.img | head -n1)"
+          if [[ -n "$src" ]]; then
+            # 目录名即工件名 repo-boot-<kernel_release>-<label>，发布为
+            # boot-<kernel_release>-<label>.img，与 README 的下载说明一致
+            artifact="$(basename "$(dirname "$src")")"
+            name="${artifact#repo-}"      # repo-boot-<ver>-<label> -> boot-<ver>-<label>
+            cp "$src" "repo-out/${name}.img"
+            echo "boot 镜像将发布为 ${name}.img"
+          else
+            echo "::warning::未收集到 boot.img，本次不发布内核引导镜像"
+          fi
+
       - name: Publish to release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -672,19 +714,39 @@ jobs:
               --notes "Xiaomi Pad 6S Pro (sheng) 设备包的 pacman 仓库。用法见 sheng.conf。"
           fi
 
-          # 先删掉 repo-out 里已不存在的旧资产：脚本会裁掉超出 REPO_KEEP 的版本，
-          # 这些文件不删就一直留在 release 里。gh release upload 只覆盖同名文件。
+          # 包文件只留 repo-out 里存在的（脚本裁掉的旧版本必须一起删）
           for asset in $(gh release view repo --json assets -q '.assets[].name'); do
-            if [[ ! -e "repo-out/$asset" ]]; then
-              echo "移除过期资产: $asset"
-              gh release delete-asset repo "$asset" --yes
-            fi
+            case "$asset" in
+              *.pkg.tar.*)
+                if [[ ! -e "repo-out/$asset" ]]; then
+                  echo "移除过期资产: $asset"
+                  gh release delete-asset repo "$asset" --yes
+                fi
+                ;;
+            esac
+          done
+
+          # boot 镜像只保留每个分区标签的最新一份：旧内核的 boot.img 对新内核没用，
+          # 留着只会让 release 不断变大
+          for asset in $(gh release view repo --json assets -q '.assets[].name'); do
+            case "$asset" in
+              boot-*.img)
+                [[ -e "repo-out/$asset" ]] && continue
+                # boot-<ver>-<label>.img -> <label>.img
+                label="${asset#boot-}"; label="${label#*-}"
+                if compgen -G "repo-out/boot-*-${label}" >/dev/null; then
+                  echo "移除旧 boot 镜像: $asset"
+                  gh release delete-asset repo "$asset" --yes
+                fi
+                ;;
+            esac
           done
 
           gh release upload repo repo-out/* --clobber
 
       - name: Summary
         run: |
+          boot="$(find repo-out -maxdepth 1 -name 'boot-*.img' -printf '%f\n' 2>/dev/null | head -n1)"
           {
             echo "## pacman 仓库已发布"
             echo ""
@@ -692,6 +754,8 @@ jobs:
             echo "|---|---|"
             echo "| 仓库地址 | https://github.com/${{ github.repository }}/releases/download/repo |"
             echo "| 包数量 | $(find repo-out -maxdepth 1 -name '*.pkg.tar.*' | wc -l) |"
+            echo "| 内核引导镜像 | ${boot:-未发布} |"
             echo ""
             echo "客户端配置见 release 里的 \`sheng.conf\`。"
+            echo "升级 linux-xiaomi-sheng 后必须刷对应的 boot.img，否则开机黑屏。"
           } >> "$GITHUB_STEP_SUMMARY"

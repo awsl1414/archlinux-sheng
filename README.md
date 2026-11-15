@@ -96,6 +96,48 @@ sudo pacman -Syu
 sudo pacman -U https://github.com/awsl1414/archlinux-sheng/releases/download/repo/<文件名>
 ```
 
+### 升级内核必须重刷 boot.img
+
+内核包（`linux-xiaomi-sheng`）在仓库里，boot 分区不在 pacman 管辖内。只跑
+`pacman -Syu` 会把 rootfs 里的内核模块换掉，boot 分区上的 boot.img 还是旧的，
+两者 vermagic 对不上，重启后黑屏、系统起不来。
+
+升级内核时要走完整两步：
+
+```bash
+# 1. 先看这次会把内核升到哪个版本
+pacman -Qu linux-xiaomi-sheng
+
+# 2. 升级 rootfs（此时先别重启）
+sudo pacman -Syu
+
+# 3. 下载与新内核版本对应的 boot.img 并刷入
+#    文件名格式 boot-<内核版本>-<分区标签>.img，分区标签见下
+gh release download repo -R awsl1414/archlinux-sheng \
+  --pattern 'boot-<内核版本>-<分区标签>.img' --clobber
+fastboot flash boot boot-<内核版本>-<分区标签>.img
+
+# 4. 重启
+reboot
+```
+
+分区标签由构建时的 `boot_mode` 决定：
+
+| boot_mode | 文件名后缀 | 刷入分区 |
+| --- | --- | --- |
+| `single (userdata)` | `-userdata.img` | `boot` |
+| `dual (linux)` | `-linux.img` | `boot` |
+| `custom` | `-<custom_partition>.img` | 按自定义分区 |
+
+仓库里每个分区标签只保留最新的一个 boot.img，所以取到的就是当前内核对应的那份。
+刷错版本的表现是开机黑屏、无任何输出，此时进 fastboot 重刷正确版本即可恢复，数据不受影响。
+
+只想升级用户态包、不想动内核时，把内核排除在升级之外：
+
+```bash
+sudo pacman -Syu --ignore linux-xiaomi-sheng
+```
+
 ## 许可与第三方组件
 
 本仓库是构建脚本与 PKGBUILD 集合，自身不声明开源许可证（上游 `debian-sheng` 亦未声明）。

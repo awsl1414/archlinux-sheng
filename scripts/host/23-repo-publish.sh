@@ -149,6 +149,10 @@ cat > "$OUT_DIR/$REPO_NAME.conf" <<EOF
 # 把这一段放在 /etc/pacman.conf 里所有官方仓库段之前：
 # 本仓库的设备包替换了官方仓库的同名包（linux / linux-firmware / libssc / fprintd 等），
 # 排在后面时 pacman 会优先解析官方版本。
+#
+# 注意：升级 linux-xiaomi-sheng 后必须重刷对应的 boot.img，否则开机黑屏。
+# boot 分区不由 pacman 管理，只升级 rootfs 会让内核模块与 boot.img 版本不一致。
+# 详见 README 的「升级内核必须重刷 boot.img」。
 [$REPO_NAME]
 SigLevel = Optional TrustAll
 Server = ${REPO_URL:-__REPO_URL__}
