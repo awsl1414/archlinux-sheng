@@ -613,8 +613,10 @@ jobs:
       - name: Install Host Tools
         run: |
           sudo apt-get update -qq
-          # repo-add 由 pacman-package-manager 提供（Ubuntu 自带该包）
-          sudo apt-get install -y -qq curl git zstd xz-utils pacman-package-manager
+          # repo-add 来自 pacman-package-manager；它内部用 bsdtar 读包的 .PKGINFO，
+          # 缺 libarchive-tools 时每个包都会被判成 "is not a package file, skipping"
+          sudo apt-get install -y -qq curl git zstd xz-utils \
+            pacman-package-manager libarchive-tools
 
       # 先拉回上一版仓库目录，本脚本才能在它之上增量更新。全量重建会让旧版本从
       # 数据库里消失，用户 pacman -Syu 时看到包消失或被迫降级。

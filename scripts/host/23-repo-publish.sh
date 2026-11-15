@@ -34,6 +34,8 @@ mapfile -t pkgs < <(find "$SRC_DIR" -maxdepth 1 -name '*.pkg.tar.*' ! -name '*.s
 
 # repo-add 来自 pacman，宿主是 Ubuntu runner 时由 workflow 安装
 command -v repo-add >/dev/null 2>&1 || die "缺少 repo-add（Ubuntu 上由 pacman-package-manager 提供）"
+# repo-add 用 bsdtar 读每个包的 .PKGINFO，缺失时只会逐包报 "is not a package file"
+command -v bsdtar >/dev/null 2>&1 || die "缺少 bsdtar（Ubuntu 上由 libarchive-tools 提供，repo-add 读包需要它）"
 
 mkdir -p "$OUT_DIR"
 
