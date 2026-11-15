@@ -1,0 +1,15 @@
+# Maintainer: archlinux-sheng
+# 元包，不含文件。装这一个即可得到全部设备包。成员变更时递增 pkgrel。
+pkgname=sheng-meta
+pkgver=1.0
+pkgrel=1
+pkgdesc="All device packages for Xiaomi Pad 6S Pro (sheng) on Arch Linux ARM"
+arch=('aarch64')
+url="https://github.com/awsl1414/archlinux-sheng"
+license=('custom')
+depends=('sheng-meta-core' 'sheng-meta-desktop' 'sheng-meta-extra')
+options=('!strip' '!debug' '!lto')
+
+package() {
+  :
+}

@@ -1,0 +1,16 @@
+# Maintainer: archlinux-sheng
+# 元包，不含文件。内核、固件、音频任一缺失会导致开不了机或没有声音，故归为一组。
+# 成员变更时递增 pkgrel。
+pkgname=sheng-meta-core
+pkgver=1.0
+pkgrel=1
+pkgdesc="Kernel, firmware and audio baseline for Xiaomi Pad 6S Pro (sheng) on Arch Linux ARM"
+arch=('aarch64')
+url="https://github.com/awsl1414/archlinux-sheng"
+license=('custom')
+depends=('linux-xiaomi-sheng' 'firmware-xiaomi-sheng' 'alsa-xiaomi-sheng' 'fastrpc')
+options=('!strip' '!debug' '!lto')
+
+package() {
+  :
+}

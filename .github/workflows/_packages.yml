@@ -757,6 +757,55 @@ jobs:
           if-no-files-found: error
 
   # ---------------------------------------------------------------------------
+  # 元包：sheng-meta-core / -desktop / -extra / sheng-meta
+  #
+  #   四个包都不含文件，只声明 depends，把设备包收成一个安装单位
+  #   （`pacman -S sheng-meta` 装齐）。
+  #   用 MAKEPKG_FLAGS=-df：depends 指向本工作流其它作业刚产出的包，这些包不在
+  #   任何 pacman 仓库里，makepkg -s 解析依赖必然失败。
+  #   不把彼此预装进 chroot：-df 已跳过依赖检查，预装反而会让 pacman -U 去解析
+  #   那些不在 chroot 里的设备包而失败。
+  # ---------------------------------------------------------------------------
+  build-meta:
+    name: Build meta packages
+    needs: [prepare-chroot]
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          repository: ${{ inputs.source_repo }}
+      - name: Install Host Tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq curl git zstd xz-utils
+      - name: Download Prepared Build Chroot
+        uses: actions/download-artifact@v8
+        with:
+          name: alarm-build-chroot
+          path: .chroot-cache
+      - name: Unpack Build Chroot
+        env:
+          ALARM_CHROOT_TAR: .chroot-cache/chroot.tar.zst
+        run: |
+          chmod +x scripts/host/20-alarm-chroot.sh
+          sudo env ROOTFS_BASE="$ROOTFS_BASE" ALARM_CHROOT_TAR="$ALARM_CHROOT_TAR" bash scripts/host/20-alarm-chroot.sh
+      - name: Package (makepkg, 不解析依赖)
+        run: |
+          chmod +x scripts/host/21-build-pkg.sh
+          sudo env ROOTFS_BASE="$ROOTFS_BASE" MAKEPKG_FLAGS="-df" \
+            bash scripts/host/21-build-pkg.sh \
+              sheng-meta-core sheng-meta-desktop sheng-meta-extra sheng-meta
+      # sheng-meta 是 sheng-meta-core/-desktop/-extra 的前缀，用通配收全四个包
+      - name: Upload meta packages
+        uses: actions/upload-artifact@v7
+        with:
+          name: sheng-meta-pkgs
+          path: pkgs/sheng-meta*.pkg.tar.*
+          retention-days: 3
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
   # 说明：这里原本还有一个「一次构建全部包」的汇总作业（21-build-pkg.sh --all）。
   # 已移除，原因有两条（都不是风格问题）：
   #   1) 它会在每次构建里把 15 个包全部重建一遍，与上面逐个作业完全重复（浪费 30+ 分钟）；

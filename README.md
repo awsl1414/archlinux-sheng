@@ -55,6 +55,47 @@
 `rootfs_base=holo-core` 已移除：`scripts/host/holo-lib.sh`、`01b-bootstrap-holo.sh` 与
 `scripts/lists-holo/` 在 `e960212` 删除，`distro-env.sh` 现在会直接拒绝该值。
 
+## 设备包仓库
+
+除了组装 rootfs，每次构建还会把全部设备包整理成 pacman 仓库，发布到本仓库的
+`repo` Release（作业 `publish-repo`）：
+
+```
+https://github.com/awsl1414/archlinux-sheng/releases/download/repo
+```
+
+已经跑着这套 rootfs 的设备可以直接升级，不用重刷镜像。
+
+先取出仓库配置片段，再把它放到 `/etc/pacman.conf` 里所有官方仓库段（`[core]`、
+`[extra]`、`[alarm]`）之前。顺序不能颠倒：本仓库的包替换了官方仓库的同名包，
+排在后面时 pacman 会先解析官方版本。
+
+```bash
+curl -sSL https://github.com/awsl1414/archlinux-sheng/releases/download/repo/sheng.conf \
+  -o /tmp/sheng.conf
+
+sudo sh -c 'cat /tmp/sheng.conf /etc/pacman.conf > /tmp/pacman.conf.new \
+  && mv /tmp/pacman.conf.new /etc/pacman.conf'
+
+sudo pacman -Syu
+```
+
+`sheng-meta` 一次装齐全部设备包，也可以按需只装分组：
+
+| 元包 | 内容 |
+| --- | --- |
+| `sheng-meta-core` | 内核、固件、ALSA UCM2 配置、FastRPC |
+| `sheng-meta-desktop` | 传感器、旋转、键盘认证、触控笔 |
+| `sheng-meta-extra` | 指纹栈、充电相关工具 |
+| `sheng-meta` | 以上全部 |
+
+每个包在仓库里保留最近 3 个版本。想回退时，用 `pacman -U` 直接指向对应版本的
+文件 URL：
+
+```bash
+sudo pacman -U https://github.com/awsl1414/archlinux-sheng/releases/download/repo/<文件名>
+```
+
 ## 许可与第三方组件
 
 本仓库是构建脚本与 PKGBUILD 集合，自身不声明开源许可证（上游 `debian-sheng` 亦未声明）。

@@ -190,6 +190,8 @@ permissions:
   actions: read
   packages: read
 
+# 「Build RootFS (Arch Linux ARM)」的产物除镜像外，还会把设备包整理成 pacman
+# 仓库发布到 Release 的 repo 标签（见 jobs.publish-repo），该作业单独授予写权限
 jobs:
   packages:
     name: Build Device Packages (pacman)
@@ -577,4 +579,114 @@ jobs:
             echo "| rootfs.img | $(du -h rootfs.img 2>/dev/null | cut -f1 || echo 'N/A') |"
             echo "| boot.img | $(du -h boot.img 2>/dev/null | cut -f1 || echo 'N/A') |"
             echo "| 本地 pacman 包数量 | $(find pkgs -maxdepth 1 -name '*.pkg.tar.*' 2>/dev/null | wc -l) |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ---------------------------------------------------------------------------
+  # 发布 pacman 仓库到 Release
+  #
+  # 不能用 Actions artifact：会过期，下载要 API 认证，URL 也随 run 变化，
+  #   pacman 取不到。Release 资产是稳定的直链，同一 tag 下可反复覆盖。
+  #
+  # 只用一个 repo 标签：pacman 的数据库是一个整体，客户端只需要一个固定 Server
+  #   地址。版本历史靠 REPO_KEEP 在目录内保留，回退时直接指向旧文件的 URL。
+  #
+  # repo release 不存在时由本作业自动创建。
+  # ---------------------------------------------------------------------------
+  publish-repo:
+    name: Publish pacman repo
+    needs: [packages]
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    permissions:
+      # 作业级 permissions 会整体覆盖顶层的三项，这里必须把 actions 显式列出，
+      # 否则 download-artifact 拿不到本轮产出的包，也没有 contents 写权限发 release
+      contents: write
+      actions: read
+      packages: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install Host Tools
+        run: |
+          sudo apt-get update -qq
+          # repo-add 由 pacman-package-manager 提供（Ubuntu 自带该包）
+          sudo apt-get install -y -qq curl git zstd xz-utils pacman-package-manager
+
+      # 先拉回上一版仓库目录，本脚本才能在它之上增量更新。全量重建会让旧版本从
+      # 数据库里消失，用户 pacman -Syu 时看到包消失或被迫降级。
+      - name: Restore previous repo
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p repo-out
+          if gh release view repo >/dev/null 2>&1; then
+            echo "发现已有 repo release，拉取上一版数据库与包"
+            gh release download repo --dir repo-out --skip-existing --pattern '*' || true
+            ls -1 repo-out | sed 's/^/    /' | head -n 50
+          else
+            echo "尚未创建 repo release，本次为首版"
+          fi
+
+      - name: Collect packages
+        uses: actions/download-artifact@v8
+        with:
+          pattern: '*-pkg*'
+          merge-multiple: true
+          path: pkgs
+
+      - name: Verify collected packages
+        run: |
+          count="$(find pkgs -maxdepth 1 -name '*.pkg.tar.*' | wc -l)"
+          echo "收集到 ${count} 个包"
+          ls -lh pkgs | sed 's/^/    /'
+          # 元包缺失说明 build-meta 作业没跑通，发布出去会让 pacman -S sheng-meta 失败。
+          # 模式必须写成 "${p}-[0-9]*"：sheng-meta 同时是 sheng-meta-core/-desktop/-extra
+          # 的前缀，用 "${p}-*" 时只要子分组存在就会把缺失的 sheng-meta 判成存在
+          for p in sheng-meta sheng-meta-core sheng-meta-desktop sheng-meta-extra; do
+            if ! compgen -G "pkgs/${p}-[0-9]*.pkg.tar.*" >/dev/null; then
+              echo "::error::缺少元包: ${p}"
+              exit 1
+            fi
+          done
+
+      - name: Build repo
+        env:
+          REPO_URL: "https://github.com/${{ github.repository }}/releases/download/repo"
+        run: |
+          chmod +x scripts/host/23-repo-publish.sh
+          scripts/host/23-repo-publish.sh pkgs repo-out sheng
+
+      - name: Publish to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if ! gh release view repo >/dev/null 2>&1; then
+            gh release create repo \
+              --title "pacman repo" \
+              --notes "Xiaomi Pad 6S Pro (sheng) 设备包的 pacman 仓库。用法见 sheng.conf。"
+          fi
+
+          # 先删掉 repo-out 里已不存在的旧资产：脚本会裁掉超出 REPO_KEEP 的版本，
+          # 这些文件不删就一直留在 release 里。gh release upload 只覆盖同名文件。
+          for asset in $(gh release view repo --json assets -q '.assets[].name'); do
+            if [[ ! -e "repo-out/$asset" ]]; then
+              echo "移除过期资产: $asset"
+              gh release delete-asset repo "$asset" --yes
+            fi
+          done
+
+          gh release upload repo repo-out/* --clobber
+
+      - name: Summary
+        run: |
+          {
+            echo "## pacman 仓库已发布"
+            echo ""
+            echo "| 项 | 值 |"
+            echo "|---|---|"
+            echo "| 仓库地址 | https://github.com/${{ github.repository }}/releases/download/repo |"
+            echo "| 包数量 | $(find repo-out -maxdepth 1 -name '*.pkg.tar.*' | wc -l) |"
+            echo ""
+            echo "客户端配置见 release 里的 \`sheng.conf\`。"
           } >> "$GITHUB_STEP_SUMMARY"
