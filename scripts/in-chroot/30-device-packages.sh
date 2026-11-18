@@ -9,10 +9,10 @@
 #     scripts/host/21-build-pkg.sh 与 packages/_shared/deb2pkg.sh），因此依赖
 #     解析由 pacman 完成；依赖缺失时 pacman -U 直接失败（不会像 apt 那样
 #     静默留在半配置状态）
-#   * ALARM 官方仓库里已经有 libssc 0.4.4-1 与 iio-sensor-proxy 3.9-1，而本仓库
-#     构建的 libssc（0.4.2，带 QRTR 等待补丁）与 iio-sensor-proxy-sheng（3.9）
-#     需要取而代之。pacman 默认拒绝「降级」，因此这里先把仓库版本移出
-#     （-Rdd 不删依赖），再安装本地包
+#   * ALARM 官方仓库里已经有 libssc 与 iio-sensor-proxy，而本仓库需要带 QRTR
+#     等待补丁的 libssc 与显式 -Dssc-support=enabled 的 proxy。两者与官方版
+#     文件路径重叠，pacman 不会自动换掉，因此先把仓库版本移出（-Rdd 不删依赖），
+#     再安装本地包
 #   * 包内不 enable 服务（Arch 惯例 + 上游 postinst 的 enable 未移植），
 #     统一在这里 systemctl enable
 #
@@ -43,16 +43,20 @@ done
 # ---------------------------------------------------------------------------
 # 1) 移除 ALARM 仓库/基础镜像里与本地包冲突的版本
 #    -Rdd：不删除依赖它的包，只删自己（随后会被本地包顶上）
-#    * libssc / iio-sensor-proxy：ALARM extra 里本来就有（0.4.4-1 / 3.9-1，且
-#      iio-sensor-proxy 依赖 libssc）。我们需要的是带 QRTR 等待补丁的 libssc
-#      与显式 -Dssc-support=enabled 的 proxy，因此换成本仓库构建的包。
-#    * linux-firmware*：ALARM 的 rootfs tarball 预装了 linux-firmware 元包
-#      （它把 linux-firmware-qcom 放在 optdepends，不显式装就没有 Adreno 固件）。
-#      Debian 侧 firmware-xiaomi-sheng 的语义就是「替换 linux-firmware」，
-#      Arch 侧同样声明了 provides/conflicts/replaces=('linux-firmware')；但 pacman
-#      与元包冲突时**不会**顺带移除它的分包，而分包与本包文件路径会重叠
-#      （例如 ath12k/WCN7850/hw2.0/*），会让后面的 pacman -U 因文件冲突直接失败。
-#      因此这里显式移除全部 linux-firmware* 包，设备固件统一由本仓库的包提供。
+#    * libssc / iio-sensor-proxy：ALARM extra 里有同名包（libssc 0.4.4、iio-sensor-proxy
+#      3.9，且后者依赖前者）。我们需要带 QRTR 等待补丁的 libssc 与显式
+#      -Dssc-support=enabled 的 proxy。
+#      本仓库的 libssc 已改名为 libssc-xiaomi-sheng（provides/conflicts=libssc），
+#      但**不能指望 pacman 靠 conflicts 自动换包**：实测 `--noconfirm` 下对
+#      "Remove libssc? [y/N]" 默认回答 N，直接报 unresolvable package conflicts。
+#      所以这里显式删掉官方 libssc；同时它与新版的文件路径完全重叠，
+#      不删也会在 pacman -U 时报 conflicting files。
+#    * linux-firmware 的两个分包：firmware-xiaomi-sheng 的 38 个文件里有 7 个与
+#      官方分包路径相同（qcom/a740_sqe.fw 等 -> linux-firmware-qcom；
+#      ath12k/WCN7850/hw2.0/*、qca/hmt* -> linux-firmware-atheros），且 6 个内容
+#      不同（sheng 是小米定制版）。两者无法共存于 /usr/lib/firmware，故先移除。
+#      只删这两个；其余 17 个 linux-firmware* 分包与本包无重叠，留着。
+#      元包 linux-firmware 也一并移除 —— 它 depends 着 atheros，留着会被依赖拉回。
 #    * linux-aarch64：ALARM 的 rootfs tarball 预装的 stock 内核（无 sheng DTB）。
 #      linux-xiaomi-sheng 声明了 conflicts=('linux' 'linux-aarch64')，但 pacman 在
 #      `--noconfirm` 下对"是否移除冲突包"默认回答 N，实测报
@@ -67,9 +71,12 @@ for name in libssc iio-sensor-proxy linux-aarch64; do
   fi
 done
 
-mapfile -t fw_pkgs < <(pacman -Qq --color never 2>/dev/null | grep -E '^linux-firmware' || true)
+# 与 firmware-xiaomi-sheng 有文件路径重叠的固件包。用 -Rdd 跳过依赖检查：
+# 元包 linux-firmware 依赖其中几个，按依赖顺序一个个删会互相牵制。
+mapfile -t fw_pkgs < <(pacman -Qq --color never 2>/dev/null \
+  | grep -E '^linux-firmware(-qcom|-atheros)?$' || true)
 if [[ "${#fw_pkgs[@]}" -gt 0 ]]; then
-  warn "移除基础镜像预装的固件包（${#fw_pkgs[@]} 个）：${fw_pkgs[*]}"
+  warn "移除与 sheng 固件重叠的固件包（${#fw_pkgs[@]} 个）：${fw_pkgs[*]}"
   pacman -Rdd --noconfirm --color never "${fw_pkgs[@]}" \
     || warn "移除固件包失败（若随后 pacman -U 报文件冲突，请检查本步骤）"
 fi

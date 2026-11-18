@@ -192,7 +192,7 @@ LOCAL_PKGS=(
   sheng-sensors
   sheng-devauth
   fastrpc
-  libssc
+  libssc-xiaomi-sheng
   iio-sensor-proxy-sheng
 )
 for p in "${LOCAL_PKGS[@]}"; do

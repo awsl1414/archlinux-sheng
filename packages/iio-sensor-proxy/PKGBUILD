@@ -9,15 +9,15 @@
 #   为运行期保守集合，版本升级后若选项更名，构建阶段会直接报未知选项
 pkgname=iio-sensor-proxy-sheng
 pkgver=3.9
-pkgrel=1
+pkgrel=2
 pkgdesc="IIO sensors to D-Bus proxy with SSC backend, for Xiaomi Pad 6S Pro (sheng)"
 arch=('aarch64')
 url="https://gitlab.freedesktop.org/hadess/iio-sensor-proxy"
 license=('GPL-3.0-or-later')
 provides=('iio-sensor-proxy')
 conflicts=('iio-sensor-proxy')
-depends=('dbus' 'glib2' 'libgudev' 'polkit' 'libssc')
-makedepends=('meson' 'ninja' 'systemd' 'libssc')
+depends=('dbus' 'glib2' 'libgudev' 'polkit' 'libssc-xiaomi-sheng')
+makedepends=('meson' 'ninja' 'systemd' 'libssc-xiaomi-sheng')
 options=('!strip' '!debug' '!lto')
 source=("iio-sensor-proxy-3.9.tar.gz::https://gitlab.freedesktop.org/hadess/iio-sensor-proxy/-/archive/3.9/iio-sensor-proxy-3.9.tar.gz")
 sha256sums=('SKIP')

@@ -2,32 +2,31 @@
 # 来源：ianchb/sheng-firmware（master），对应 debian-sheng 的 firmware-xiaomi-sheng 包
 # 原生化要点：
 #   * Debian 版用 dpkg-deb 装到 /usr/lib/firmware，Arch 位置相同，无需改路径
-#   * Debian 的 Conflicts/Replaces: linux-firmware 转为 pacman 的 conflicts/replaces，
-#     并额外 provides=('linux-firmware')，这样依赖 linux-firmware 的包仍可解析
 #   * 载荷由 workflow 预先打包成 sheng-firmware.tar.zst 放在本目录（支持自定义
 #     firmware_repo / firmware_branch 输入），因此 makepkg 全程离线、可复现
 #
-# 注意（已核实的 ALARM 事实）：
-#   * ALARM 的 `linux-firmware` 是**元包**，它把 `linux-firmware-qcom` 放在 optdepends
-#     （不显式安装就没有 Adreno a740 的 zap/sqe 固件），并且拆出
-#     `linux-firmware-atheros` 等分包，其中 ath12k/WCN7850/hw2.0/* 与本包路径重叠。
-#     ALARM 的 rootfs tarball 预装了这个元包，而 pacman 在安装与本包冲突的元包时
-#     不会顺带移除它的分包 → 会在安装本包时报文件冲突。
-#     因此 scripts/in-chroot/30-device-packages.sh 会在安装前显式移除全部
-#     linux-firmware* 包（与 Debian 侧「本包替换 linux-firmware」的语义一致）。
-#   * 如果构建后发现 GPU（Adreno 740）缺少固件，说明 sheng-firmware 未包含
-#     a740_sqe.fw / a740_zap.mbn，此时可在设备上单独安装 linux-firmware-qcom
-#     （需确认与本包无文件路径重叠）。
+# 与 ALARM 官方固件包的关系（已逐个分包实测）：
+#   * 本包的 38 个文件里有 7 个与官方分包**路径相同**，其中 6 个内容不同
+#     （sheng 的是小米定制版，不是官方版的子集）：
+#       qcom/a740_sqe.fw、qcom/gmu_gen70200.bin        -> linux-firmware-qcom
+#       ath12k/WCN7850/hw2.0/{amss,board-2,m3}.bin、
+#       qca/hmtbtfw20.tlv、qca/hmtnv20.bin             -> linux-firmware-atheros
+#     其余 17 个分包与本包无重叠。两者不能共存于 /usr/lib/firmware，
+#     因此 scripts/in-chroot/30-device-packages.sh 只移除这两个分包（连同牵引
+#     它们的元包），不再像以前那样删光全部 linux-firmware*。
+#   * 不写 replaces：它会让每次 `pacman -Syu` 都把本包加进事务（同名顶替的
+#     无条件触发），版本相同也照样提示。conflicts 才是这里要表达的语义 ——
+#     只在官方包真的存在时拦住。
+#   * 不写 provides=('linux-firmware')：本包只提供 sheng 需要的那些固件，
+#     不覆盖官方元包的全部内容，声称提供它会误导依赖解析。
 pkgname=firmware-xiaomi-sheng
 pkgver=1.0
-pkgrel=1
+pkgrel=2
 pkgdesc="Firmware blobs & configs for Xiaomi Pad 6S Pro (sheng): WCN7850/ath12k, QCA BT, Cirrus DSP, touch, fingerprint"
 arch=('aarch64')
 url="https://github.com/ianchb/sheng-firmware"
 license=('custom')
-provides=('linux-firmware')
-conflicts=('linux-firmware')
-replaces=('linux-firmware')
+conflicts=('linux-firmware-qcom' 'linux-firmware-atheros')
 options=('!strip' '!debug' '!lto')
 source=("sheng-firmware.tar.zst")
 sha256sums=('SKIP')
@@ -39,10 +38,28 @@ package() {
   }
 
   install -d "$pkgdir/usr/lib/firmware"
-  cp -a --no-preserve=ownership "$srcdir/." "$pkgdir/usr/lib/firmware/"
+  # 显式列出要收的条目，不用 `"$srcdir/."`：$srcdir 里的 sheng-firmware.tar.zst
+  # 是指向构建目录的软链，整体复制会把它作为悬空链接打进包里
+  # （设备上 /usr/lib/firmware/sheng-firmware.tar.zst -> /build/...，永远是坏的）
+  local entries=() e
+  for e in ath12k cirrus qca novatek nanosic qcom fpcsheng.elf; do
+    [[ -e "$srcdir/$e" ]] && entries+=("$srcdir/$e")
+  done
+  ((${#entries[@]} > 0)) || {
+    error "载荷里没有任何预期条目（ath12k/cirrus/qca/novatek/nanosic/qcom/fpcsheng.elf）"
+    exit 1
+  }
+  cp -a --no-preserve=ownership "${entries[@]}" "$pkgdir/usr/lib/firmware/"
 
   # 清掉 clone 带进来的版本控制/CI 元数据
   rm -rf "$pkgdir/usr/lib/firmware/.git" \
          "$pkgdir/usr/lib/firmware/.github" \
          "$pkgdir/usr/lib/firmware/.gitignore"
+
+  # 硬校验：悬空链接一旦混进来，设备上 pacman -Qkk 会永远报一个不存在的文件
+  if find "$pkgdir/usr/lib/firmware" -xtype l | grep -q .; then
+    error "载荷里有悬空符号链接："
+    find "$pkgdir/usr/lib/firmware" -xtype l
+    exit 1
+  fi
 }

@@ -28,7 +28,7 @@ name: _Build Device Packages (Arch)
 #   * 并行度高，chroot 准备开销只付一次
 #   * 汇总作业在这里是**行不通**的：6 个 xiaomi-* 包与 prebuilt 内核包的 PKGBUILD
 #     都声明 source=("<pkgname>.deb")，需要各自的下载/重打包步骤提供 deb 载荷；
-#     iio-sensor-proxy 还要求先安装本仓库构建的 libssc。这些依赖只有专用作业能保证。
+#     iio-sensor-proxy 还要求先安装本仓库构建的 libssc-xiaomi-sheng。这些依赖只有专用作业能保证。
 #     本地一次性排查可用：sudo scripts/host/21-build-pkg.sh --all
 on:
   workflow_call:
@@ -368,8 +368,9 @@ jobs:
           if-no-files-found: error
 
   # ---------------------------------------------------------------------------
-  # 4) libssc（带 QRTR 等待补丁；ALARM extra 里也有 libssc 0.4.4，
-  #    我们的包同名，rootfs 安装时会先移除仓库版本再装本地包）
+  # 4) libssc-xiaomi-sheng（带 QRTR 等待补丁）
+  #    包名故意不叫 libssc：ALARM extra 有同名包，同名顶替会永久遮蔽它的更新。
+  #    靠 provides/conflicts=('libssc') 与官方版互斥，rootfs 安装时先移除官方版。
   # ---------------------------------------------------------------------------
   build-libssc:
     name: Build libssc
@@ -407,8 +408,8 @@ jobs:
           if-no-files-found: error
 
   # ---------------------------------------------------------------------------
-  # 5) iio-sensor-proxy-sheng（-Dssc-support=enabled，编译期需要本仓库的 libssc）
-  #    needs: build-libssc，并把 libssc 包预装进构建 chroot
+  # 5) iio-sensor-proxy-sheng（-Dssc-support=enabled，编译期需要本仓库的 libssc-xiaomi-sheng）
+  #    needs: build-libssc，并把该包预装进构建 chroot
   # ---------------------------------------------------------------------------
   build-iio-sensor-proxy:
     name: Build iio-sensor-proxy (SSC)
@@ -438,10 +439,11 @@ jobs:
         run: |
           chmod +x scripts/host/20-alarm-chroot.sh
           sudo env ROOTFS_BASE="$ROOTFS_BASE" ALARM_CHROOT_TAR="$ALARM_CHROOT_TAR" bash scripts/host/20-alarm-chroot.sh
-      - name: Build (makepkg, 预装 libssc)
+      - name: Build (makepkg, 预装 libssc-xiaomi-sheng)
         run: |
           chmod +x scripts/host/21-build-pkg.sh
-          # PKG_PREINSTALL 用真实文件路径（上游版本变化时按 glob 取第一个）
+          # PKG_PREINSTALL 用真实文件路径（上游版本变化时按 glob 取第一个）。
+          # 包名是 libssc-xiaomi-sheng，这个 glob 靠前缀匹配到它。
           PRE="$(ls -1 deps/libssc-*.pkg.tar.* | head -n1)"
           sudo env PKG_PREINSTALL="$PRE" bash scripts/host/21-build-pkg.sh iio-sensor-proxy
       - uses: actions/upload-artifact@v7
@@ -726,8 +728,8 @@ jobs:
   #   1) 它会在每次构建里把 15 个包全部重建一遍，与上面逐个作业完全重复（浪费 30+ 分钟）；
   #   2) 它必然失败：6 个 xiaomi-* 包与 prebuilt 内核包的 PKGBUILD 都声明
   #      source=("<pkgname>.deb")，在该作业里没有任何步骤提供这些 deb 载荷；
-  #      而 iio-sensor-proxy 需要先安装本仓库构建的 libssc（否则会链到 ALARM 官方
-  #      libssc 0.4.4），该顺序依赖只有上面的专用作业才保证。
+  #      而 iio-sensor-proxy 需要先安装本仓库构建的 libssc-xiaomi-sheng（否则会链到
+  #      ALARM 官方的 libssc），该顺序依赖只有上面的专用作业才保证。
   # rootfs.yml 已改为按下载上面各作业的产物（kernel-*-pkg / fastrpc-pkg / ... / xiaomi-pkgs）。
   # 需要一次性排查时，可在本地跑：sudo scripts/host/21-build-pkg.sh --all（先备好 deb 载荷）。
   # ---------------------------------------------------------------------------

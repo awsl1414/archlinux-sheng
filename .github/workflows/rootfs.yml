@@ -383,7 +383,7 @@ jobs:
       - name: Collect fastrpc
         uses: actions/download-artifact@v8
         with: { name: fastrpc-pkg, path: pkgs }
-      - name: Collect libssc
+      - name: Collect libssc-xiaomi-sheng
         uses: actions/download-artifact@v8
         with: { name: libssc-pkg, path: pkgs }
       - name: Collect iio-sensor-proxy
@@ -413,7 +413,7 @@ jobs:
 
           # 逐个断言必需包（"总数 >= N" 这种松阈值挡不住"少了一个 artifact"）
           missing=0
-          for p in linux-xiaomi-sheng fastrpc libssc iio-sensor-proxy-sheng sheng-sensors \
+          for p in linux-xiaomi-sheng fastrpc libssc-xiaomi-sheng iio-sensor-proxy-sheng sheng-sensors \
                    sheng-devauth alsa-xiaomi-sheng firmware-xiaomi-sheng; do
             if ! compgen -G "pkgs/${p}-*.pkg.tar.*" >/dev/null; then
               echo "::error::缺少必需的设备包: ${p}"

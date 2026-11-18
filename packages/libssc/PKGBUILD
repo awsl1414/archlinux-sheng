@@ -5,18 +5,27 @@
 #           meson setup build --prefix=/usr → meson compile -C build → DESTDIR=stage meson install
 # 原生化要点：编译流程不变，只把 dpkg-deb 换成 makepkg；补丁改到 prepare()；pkgver() 从 meson.build
 #   读真实版本（上游 master 现为 0.4.4，debian-sheng 打包过 0.4.2），避免版本号不一致
-# 包名：沿用 libssc（deb2pkg 的依赖映射与三个使用者的 depends 都按 libssc 书写）；若日后与
-#   ALARM/官方 libssc 版本比较冲突，再改名 libssc-xiaomi-sheng 并加 provides/conflicts=('libssc')
+# 包名：叫 libssc-xiaomi-sheng，不叫 libssc。ALARM extra 里有同名 libssc，
+#   同名顶替会把它永久遮蔽 —— 本包 pkgver 跟的是 codeberg master，官方跟的是上游
+#   release，官方发新版时设备 `pacman -Su` 只会比 sheng 仓库里的版本，收不到更新。
+#   改名后靠 provides=('libssc') 让依赖方仍能解析，conflicts 声明互斥。
+#   conflicts 不能指望 pacman 自动换包：实测 `--noconfirm` 下对
+#   "Remove libssc? [y/N]" 默认回答 N，报 unresolvable package conflicts；
+#   30-device-packages.sh 会先显式 -Rdd 掉官方 libssc。
+#   运行期无影响：两个二进制只认 soname libssc.so.2（实测两版 SONAME 与 68 个导出
+#   符号完全一致），本包仍把它装到 /usr/lib/libssc.so.2。
 # 补丁策略：与上游的 `|| true` 不同，这里容忍补丁失败（上游可能已合入）但硬校验重试逻辑存在
 #   ——静默丢补丁会让 sheng 上 iio-sensor-proxy 过早启动。当前上游 master 打得上；
 #   若日后报"补丁未生效且源码无重试逻辑"，把 source 钉到 #tag=v0.4.2 或重做补丁
-pkgname=libssc
+pkgname=libssc-xiaomi-sheng
 pkgver=0.4.2
 pkgrel=1
 pkgdesc="Qualcomm Sensor Core (SSC) client library with QRTR readiness waits, for Xiaomi Pad 6S Pro (sheng)"
 arch=('aarch64')
 url="https://codeberg.org/DylanVanAssche/libssc"
 license=('GPL-3.0-or-later')
+provides=('libssc' 'libssc.so=2-64')
+conflicts=('libssc')
 depends=('glib2' 'protobuf-c' 'libqmi' 'libmbim')
 makedepends=('git' 'meson' 'ninja' 'protobuf' 'protobuf-c' 'libqmi' 'libmbim')
 options=('!strip' '!debug' '!lto')

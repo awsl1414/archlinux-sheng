@@ -9,12 +9,12 @@
 # 待实测确认：内核需暴露 /proc/nvt_thp_raw 等节点与 /dev/uinput（内核前置条件，不在包依赖里）
 pkgname=xiaomi-sheng-thp
 pkgver=0.3.9
-pkgrel=1
+pkgrel=2
 pkgdesc="NT36532E userspace touch processor (finger & Focus Pen input) for Xiaomi Pad 6S Pro (sheng)"
 arch=('aarch64')
 url="https://github.com/ianchb/xiaomi-sheng-thp"
 license=('Apache-2.0')
-depends=('bluez' 'glibc' 'glib2' 'libssc' 'gcc-libs' 'systemd')
+depends=('bluez' 'glibc' 'glib2' 'libssc-xiaomi-sheng' 'gcc-libs' 'systemd')
 optdepends=('xiaomi-pen-status: 触控笔检测、蓝牙连接辅助与刷新率提示（上游 Recommends）')
 options=('!strip' '!debug' '!lto')
 source=("xiaomi-sheng-thp.deb")

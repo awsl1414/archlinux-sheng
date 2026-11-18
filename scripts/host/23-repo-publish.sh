@@ -159,7 +159,7 @@ done
 
 cat > "$OUT_DIR/$REPO_NAME.conf" <<EOF
 # 把这一段放在 /etc/pacman.conf 里所有官方仓库段之前：
-# 本仓库的设备包替换了官方仓库的同名包（linux / linux-firmware / libssc 等），
+# 本仓库的设备包替换了官方仓库的同名包（linux / iio-sensor-proxy 等），
 # 排在后面时 pacman 会优先解析官方版本。
 #
 # 注意：升级 linux-xiaomi-sheng 后必须重刷对应的 boot.img，否则开机黑屏。

@@ -2,12 +2,12 @@
 # 元包，不含文件。成员变更时递增 pkgrel。
 pkgname=sheng-meta-desktop
 pkgver=1.0
-pkgrel=1
+pkgrel=2
 pkgdesc="Sensors, rotation, keyboard auth and pen input for Xiaomi Pad 6S Pro (sheng)"
 arch=('aarch64')
 url="https://github.com/awsl1414/archlinux-sheng"
 license=('custom')
-depends=('sheng-meta-core' 'libssc' 'iio-sensor-proxy-sheng' 'sheng-sensors'
+depends=('sheng-meta-core' 'libssc-xiaomi-sheng' 'iio-sensor-proxy-sheng' 'sheng-sensors'
          'sheng-devauth' 'xiaomi-sheng-thp' 'xiaomi-pen-status'
          'xiaomi-sheng-keyboard-helper')
 options=('!strip' '!debug' '!lto')

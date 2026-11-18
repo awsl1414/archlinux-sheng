@@ -12,12 +12,12 @@
 #   `systemctl --global enable …-micmute.service` 让麦克风静音指示灯跟随音频会话
 pkgname=xiaomi-sheng-keyboard-helper
 pkgver=0.2.0
-pkgrel=1
+pkgrel=2
 pkgdesc="Keyboard cover helper (fold-angle input gating & mic mute LED) for Xiaomi Pad 6S Pro (sheng)"
 arch=('aarch64')
 url="https://github.com/ianchb/xiaomi-sheng-keyboard-helper"
 license=('Apache-2.0')
-depends=('glibc' 'glib2' 'libssc' 'sheng-sensors' 'libpulse' 'pipewire-pulse' 'sheng-devauth')
+depends=('glibc' 'glib2' 'libssc-xiaomi-sheng' 'sheng-sensors' 'libpulse' 'pipewire-pulse' 'sheng-devauth')
 options=('!strip' '!debug' '!lto')
 source=("xiaomi-sheng-keyboard-helper.deb")
 sha256sums=('SKIP')
