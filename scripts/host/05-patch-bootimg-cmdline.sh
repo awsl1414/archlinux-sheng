@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # 05-patch-bootimg-cmdline.sh —— 原地给 boot.img 的 cmdline 追加启动参数
 #
-# 用途：SteamOS 底包在图形阶段黑屏（背光亮但没画面、Ctrl+Alt+F2 也没反应）时，需要
+# 用途：图形阶段黑屏（背光亮但没画面、Ctrl+Alt+F2 也没反应）时，需要
 #   「更啰嗦的内核/系统日志 + 强制屏蔽图形会话」才能把失败原因显示在屏幕上。
 #   内核 cmdline 由 boot.img 携带，而 Android boot image 的 cmdline 字段是**明文**，
 #   可以原地替换（v0~v4 头的偏移都是 64、长度 512 字节）。

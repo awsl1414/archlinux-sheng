@@ -26,3 +26,6 @@ stage/
 # 临时文件
 *.log
 *.tmp
+
+# 本机 MCP 配置
+.mcp.json

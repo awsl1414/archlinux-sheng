@@ -16,8 +16,11 @@ name: _Build Device Packages (Arch)
 # 作业与上游 debian-sheng / ubuntu-sheng 的对应关系：
 #   prepare-chroot / build-kernel(custom_build) / build-kernel-prebuilt / build-fastrpc /
 #   build-libssc / build-iio-sensor-proxy / build-sheng-sensors /
-#   build-sheng-devauth / package-alsa / package-firmware / fetch-xiaomi-debs /
-#   build-libfprint / build-fprintd
+#   build-sheng-devauth / package-alsa / package-firmware / fetch-xiaomi-debs
+#
+# fprintd / libfprint 不在这里构建：ALARM extra 提供这两个包（1.94.5-2 / 1.94.100-2），
+# 私有 FPC1553 libfprint 由 xiaomi-sheng-fingerprint 自带、经 systemd drop-in 用
+# LD_LIBRARY_PATH 生效，两者共用 libfprint-2.so.2 的 ABI。
 #
 # 为什么每个包一个作业（而不是全部塞进一个汇总作业）：
 #   * 与 ubuntu 版结构一一对应，便于对照维护
@@ -665,94 +668,6 @@ jobs:
         with:
           name: xiaomi-debs
           path: deb-out/*.deb
-          retention-days: 3
-          if-no-files-found: error
-
-  # ---------------------------------------------------------------------------
-  # 12) libfprint + fprintd（指纹栈）
-  #   为什么需要：SteamOS 底包（Valve 的 deckard 仓库 + 被钉住的 extra 快照）**没有指纹栈**，
-  #   实测 xiaomi-sheng-fingerprint 装不上：
-  #       warning: cannot resolve "fprintd", a dependency of "xiaomi-sheng-fingerprint"
-  #   而它的载荷里只有**打过 FPC1553 补丁的私有 libfprint 1.94.10**
-  #   （/usr/lib/xiaomi-sheng-fingerprint/，靠 fprintd 的 drop-in 用 LD_LIBRARY_PATH 生效），
-  #   本身不含 fprintd 守护进程 —— 所以这两个都得我们自己编、随镜像分发。
-  #   版本刻意钉成 1.94.10 / 1.94.5（上游文档里实测过的组合），保证 fprintd 与
-  #   libfprint-2.so.2 的 ABI 严格对齐（补丁版也是 1.94.10）。
-  # ---------------------------------------------------------------------------
-  build-libfprint:
-    name: Build libfprint
-    needs: [prepare-chroot]
-    runs-on: ubuntu-24.04-arm
-    timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          repository: ${{ inputs.source_repo }}
-      - name: Install Host Tools
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq curl git zstd xz-utils
-      - name: Download Prepared Build Chroot
-        uses: actions/download-artifact@v8
-        with:
-          name: alarm-build-chroot
-          path: .chroot-cache
-      - name: Unpack Build Chroot
-        env:
-          ALARM_CHROOT_TAR: .chroot-cache/chroot.tar.zst
-        run: |
-          chmod +x scripts/host/20-alarm-chroot.sh
-          sudo env ROOTFS_BASE="$ROOTFS_BASE" ALARM_CHROOT_TAR="$ALARM_CHROOT_TAR" bash scripts/host/20-alarm-chroot.sh
-      - name: Build (makepkg)
-        run: |
-          chmod +x scripts/host/21-build-pkg.sh
-          sudo env ROOTFS_BASE="$ROOTFS_BASE" bash scripts/host/21-build-pkg.sh libfprint
-      - uses: actions/upload-artifact@v7
-        with:
-          name: libfprint-pkg
-          path: pkgs/libfprint-*.pkg.tar.*
-          retention-days: 3
-          if-no-files-found: error
-
-  # fprintd 编译期需要 libfprint 的头文件/pkg-config，所以先把刚编出来的包预装进 chroot
-  #   （与 iio-sensor-proxy 依赖 libssc 的处理方式完全一致）
-  build-fprintd:
-    name: Build fprintd
-    needs: [prepare-chroot, build-libfprint]
-    runs-on: ubuntu-24.04-arm
-    timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          repository: ${{ inputs.source_repo }}
-      - name: Install Host Tools
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq curl git zstd xz-utils
-      - uses: actions/download-artifact@v8
-        with:
-          name: libfprint-pkg
-          path: deps
-      - name: Download Prepared Build Chroot
-        uses: actions/download-artifact@v8
-        with:
-          name: alarm-build-chroot
-          path: .chroot-cache
-      - name: Unpack Build Chroot
-        env:
-          ALARM_CHROOT_TAR: .chroot-cache/chroot.tar.zst
-        run: |
-          chmod +x scripts/host/20-alarm-chroot.sh
-          sudo env ROOTFS_BASE="$ROOTFS_BASE" ALARM_CHROOT_TAR="$ALARM_CHROOT_TAR" bash scripts/host/20-alarm-chroot.sh
-      - name: Build (makepkg, 预装 libfprint)
-        run: |
-          chmod +x scripts/host/21-build-pkg.sh
-          PRE="$(ls -1 deps/libfprint-*.pkg.tar.* | head -n1)"
-          sudo env PKG_PREINSTALL="$PRE" bash scripts/host/21-build-pkg.sh fprintd
-      - uses: actions/upload-artifact@v7
-        with:
-          name: fprintd-pkg
-          path: pkgs/fprintd-*.pkg.tar.*
           retention-days: 3
           if-no-files-found: error
 

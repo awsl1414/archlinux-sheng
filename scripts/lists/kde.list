@@ -1,8 +1,8 @@
 # KDE Plasma 桌面（Arch Linux ARM aarch64）
 # 与 ubuntu-sheng 的 kde.list 一一对应，包名换成 Arch 的。
 #
-# 注意：一行只能写一个包名（旧版曾用 `a / b / c` 这种斜杠分隔写法，解析器会把 `/`
-# 当包名，整批安装必然失败；现在 list_packages 直接对格式报错）。
+# 注意：一行只能写一个包名。`a / b / c` 这种斜杠分隔写法会被当成包名的一部分，
+# 整批安装必然失败；list_packages 对格式直接报错。
 #
 #   * qt6-wayland：kwin_wayland / Plasma 会话的 Qt Wayland 平台插件
 #   * vulkan-icd-loader / vulkan-freedreno：Adreno (a740) 的 Vulkan ICD。

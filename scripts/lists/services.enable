@@ -7,10 +7,10 @@
 #     requirement required = 包装上了就必须存在，缺文件直接让构建失败
 #                  optional  = 上游 deb 可能下载失败（见 fetch-xiaomi-debs.sh），缺了只告警
 #
-# 为什么要有这份清单：
-#   * 旧版是在 30-device-packages.sh 里用一串 `if [[ -f … ]]; then systemctl enable …` 手写的。
-#     漏写一个不会有任何提示 —— xiaomi-sheng-thp（触控）就是这样在整轮构建里静默缺席的。
-#   * 90-verify.sh 用同一份清单做校验，避免"启用逻辑"和"校验逻辑"各维护一份、口径不一。
+# 为什么是一份独立清单：services 的启用与校验共用同一份口径。写成散在脚本里的
+# `if [[ -f … ]]; then systemctl enable …` 时，漏写一个不会有任何提示 ——
+# xiaomi-sheng-thp（触控）就这样在整轮构建里静默缺席过。required 的 unit 缺文件
+# 现在会直接让构建失败，optional 的缺了只告警。
 #
 # 只写"必须靠 enable 才会跑"的 unit。靠 udev / D-Bus / 别人 Requires 激活的
 # （iio-sensor-proxy、xiaomi-mipps-auth、keyboard-helper 的两个）不要写进来：

@@ -149,8 +149,7 @@ grep -qE '^[[:space:]]*Architecture[[:space:]]*=[[:space:]]*aarch64' "$ALARM_CHR
 alarm_tune_pacman_for_chroot "$ALARM_CHROOT" --no-checkspace
 
 # ---------------------------------------------------------------------------
-# 3) 密钥环（只有全新 chroot 且底包为 ALARM 时才需要）
-#    Holo Core 的仓库是 SigLevel = Optional（包未强制签名），不需要 populate
+# 3) 密钥环
 # ---------------------------------------------------------------------------
 if [[ "$FRESH_CHROOT" -eq 1 ]]; then
   log "初始化 pacman 密钥环"

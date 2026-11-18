@@ -1,8 +1,11 @@
 # Maintainer: archlinux-sheng
 # 元包，不含文件。成员变更时递增 pkgrel。
+#
+# libfprint / fprintd 由 ALARM extra 提供，本仓库不再分发（同名顶替会让每次
+# pacman -Syu 都弹一次 Replace，且本仓库版本更低时会静默降级已装版本）。
 pkgname=sheng-meta-extra
 pkgver=1.0
-pkgrel=1
+pkgrel=2
 pkgdesc="Fingerprint stack and charging helpers for Xiaomi Pad 6S Pro (sheng)"
 arch=('aarch64')
 url="https://github.com/awsl1414/archlinux-sheng"

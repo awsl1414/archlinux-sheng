@@ -237,8 +237,8 @@ jobs:
           IN_QUIET_BOOT: ${{ inputs.quiet_boot }}
           IN_GEN_LOCALES: ${{ inputs.gen_locales }}
         run: |
-          # holo-core 底包的脚本在 e960212 里删除了（holo-lib.sh / 01b-bootstrap-holo.sh /
-          # lists-holo/）。这里提前拒绝，避免跑到一半才因为缺文件失败。
+          # 唯一支持的底包是 alarm。输入项虽是 choice、理论上只会是 alarm，
+          # 仍在这里挡住非 alarm 值，避免后续步骤跑到一半才失败。
           if [ "$ROOTFS_BASE" != "alarm" ]; then
             echo "::error::rootfs_base=$ROOTFS_BASE 已不支持，请用 alarm"
             exit 1
@@ -404,15 +404,6 @@ jobs:
       - name: Collect xiaomi-* packages
         uses: actions/download-artifact@v8
         with: { name: xiaomi-pkgs, path: pkgs }
-      # 指纹栈：xiaomi-sheng-fingerprint 依赖发行版 fprintd，而 ALARM/Holo 源里都没有可用的
-      #   fprintd（SteamOS 底包压根不带指纹栈），所以 libfprint + fprintd 由本仓库自己编
-      #   （见 _packages.yml 的 build-libfprint / build-fprintd）
-      - name: Collect libfprint
-        uses: actions/download-artifact@v8
-        with: { name: libfprint-pkg, path: pkgs }
-      - name: Collect fprintd
-        uses: actions/download-artifact@v8
-        with: { name: fprintd-pkg, path: pkgs }
 
       - name: Verify Collected Packages
         run: |
@@ -423,8 +414,7 @@ jobs:
           # 逐个断言必需包（"总数 >= N" 这种松阈值挡不住"少了一个 artifact"）
           missing=0
           for p in linux-xiaomi-sheng fastrpc libssc iio-sensor-proxy-sheng sheng-sensors \
-                   sheng-devauth alsa-xiaomi-sheng firmware-xiaomi-sheng \
-                   libfprint fprintd; do
+                   sheng-devauth alsa-xiaomi-sheng firmware-xiaomi-sheng; do
             if ! compgen -G "pkgs/${p}-*.pkg.tar.*" >/dev/null; then
               echo "::error::缺少必需的设备包: ${p}"
               missing=1

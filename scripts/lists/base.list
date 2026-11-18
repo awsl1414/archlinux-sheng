@@ -13,7 +13,7 @@
 systemd
 # /sbin/init 由 systemd-sysvcompat 提供 —— **必须显式安装**：
 # 缺了它内核会 panic（No working init found），设备侧表现为开机全黑、背光不亮。
-# ALARM tarball 自带，但 Holo Core 底座不带（实机黑屏就是它），显式列出以防任一底包缺。
+# ALARM tarball 自带，显式列出以防底包结构变化时静默失守。
 systemd-sysvcompat
 sudo
 kmod
@@ -53,8 +53,8 @@ libqrtr-glib
 libgudev
 polkit
 libgusb
-# fprintd 不在这里装：本仓库自己编的 fprintd / libfprint 与 ALARM 仓库版本
-#   同名同路径。若在基础阶段先装仓库版，设备包阶段会降级
-#   （fprintd 1.94.5-2 → 1.94.5-1、libfprint 1.94.100 → 1.94.10），白下一轮 400 MB。
-#   fprintd 由设备包在同一事务里一起装。
+# 指纹守护进程，由 ALARM extra 提供（libfprint 作为依赖一并装上）。
+#   必须在基础阶段装：设备包阶段用 `pacman -U`，它不去仓库解析依赖，
+#   xiaomi-sheng-fingerprint 的 `depends=fprintd` 只能在事务里已存在时才成立。
+fprintd
 libpulse

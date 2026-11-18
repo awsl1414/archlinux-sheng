@@ -45,19 +45,28 @@ for f in "${pkgs[@]}"; do
 done
 
 # makepkg 的命名是 <pkgname>-<pkgver>-<pkgrel>-<arch>.pkg.tar.*。pkgrel 只含数字与点，
-# pkgver 不允许含 '-'，所以从右往左切三段即可。解析失败返回非 0。
-# 用法: parse_pkg_filename <文件名> → 设置 PKG_NAME / PKG_VER
+# pkgver 不允许含 '-'，所以从右往左切四段即可。解析失败返回非 0。
+#
+# 输出两个版本号，用途不同：
+#   PKG_VER      只有 pkgver，用于「同一版本」分组（同版本重打包算一组）
+#   PKG_FULLVER  pkgver-pkgrel，用于比较新旧。少了 pkgrel 会把 1.94.5-1 与
+#                1.94.5-2 判成相等，进而按文件名顺序挑到旧的那个，重打包就丢了。
+#
+# 用法: parse_pkg_filename <文件名> → 设置 PKG_NAME / PKG_VER / PKG_FULLVER
 parse_pkg_filename() {
-  local base rest
-  PKG_NAME=""; PKG_VER=""
+  local base rest pkgrel
+  PKG_NAME=""; PKG_VER=""; PKG_FULLVER=""
   base="${1##*/}"
   base="${base%%.pkg.tar.*}"
   rest="${base%-*}"            # 去掉 -<arch>
-  [[ "${rest##*-}" =~ ^[0-9]+(\.[0-9]+)*$ ]] || return 1   # 必须形如 pkgrel
+  pkgrel="${rest##*-}"
+  [[ "$pkgrel" =~ ^[0-9]+(\.[0-9]+)*$ ]] || return 1   # 必须形如 pkgrel
   rest="${rest%-*}"            # 去掉 -<pkgrel>
   PKG_VER="${rest##*-}"
   PKG_NAME="${rest%-*}"
-  [[ -n "$PKG_NAME" && -n "$PKG_VER" ]]
+  # 缺 pkgrel 的 <pkgname>-<arch> 会切出 PKG_NAME 与 PKG_VER 相同，这种文件不该登记。
+  [[ -n "$PKG_NAME" && "$PKG_NAME" != "$PKG_VER" ]] || return 1
+  PKG_FULLVER="$PKG_VER-$pkgrel"
 }
 
 # $1 > $2 时返回 0。优先用 vercmp（与 pacman 判定一致）；Ubuntu 的
@@ -110,18 +119,21 @@ fi
 #
 # 不能把目录里的全部文件都交给 repo-add：它是后写入者胜出，最终登记哪个版本取决于
 # 传参顺序（只对「比库里更旧」的条目告警，不阻止覆盖）。显式挑出最高版本就与顺序无关。
+#
+# 比较用 PKG_FULLVER（带 pkgrel）：只比 pkgver 时，同一版本重打包（1.94.5-1 与
+# 1.94.5-2 并存）会被判成相等，最终登记哪个取决于文件名排序，通常留下旧的那个。
 newest_per_pkg() {
   local f pkgname
-  declare -A newest=()    # pkgname -> 该包最高版本的文件路径
-  declare -A newest_ver=()  # pkgname -> 对应的 PKG_VER
+  declare -A newest=()      # pkgname -> 该包最高版本的文件路径
+  declare -A newest_ver=()  # pkgname -> 对应的 PKG_FULLVER
 
   for f in "$OUT_DIR"/*.pkg.tar.*; do
     [[ -f "$f" && "$f" != *.sig ]] || continue
     parse_pkg_filename "$f" || continue
     pkgname="$PKG_NAME"
-    if [[ -z "${newest[$pkgname]:-}" ]] || ver_gt "$PKG_VER" "${newest_ver[$pkgname]}"; then
+    if [[ -z "${newest[$pkgname]:-}" ]] || ver_gt "$PKG_FULLVER" "${newest_ver[$pkgname]}"; then
       newest["$pkgname"]="$f"
-      newest_ver["$pkgname"]="$PKG_VER"
+      newest_ver["$pkgname"]="$PKG_FULLVER"
     fi
   done
 
@@ -147,7 +159,7 @@ done
 
 cat > "$OUT_DIR/$REPO_NAME.conf" <<EOF
 # 把这一段放在 /etc/pacman.conf 里所有官方仓库段之前：
-# 本仓库的设备包替换了官方仓库的同名包（linux / linux-firmware / libssc / fprintd 等），
+# 本仓库的设备包替换了官方仓库的同名包（linux / linux-firmware / libssc 等），
 # 排在后面时 pacman 会优先解析官方版本。
 #
 # 注意：升级 linux-xiaomi-sheng 后必须重刷对应的 boot.img，否则开机黑屏。

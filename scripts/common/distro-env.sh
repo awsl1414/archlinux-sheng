@@ -6,8 +6,8 @@
 # 因此这里不再有 DISTRO_SERIES / DISTRO_SUITE，改为集中维护底包地址、镜像地址
 # 与架构常量，避免散落在 workflow YAML 里。
 #
-# 底包：目前只支持 alarm（Arch Linux ARM 官方滚动 tarball + core/extra/alarm 仓库）。
-# holo-core 底包在 e960212 里移除了相关脚本，ROOTFS_BASE=holo-core 会直接报错。
+# 底包：只有 alarm（Arch Linux ARM 官方滚动 tarball + core/extra/alarm 仓库）。
+# 其它值的拒绝逻辑见下方 case。
 
 log()  { printf '[%s] %s\n' "${0##*/}" "$*"; }
 warn() { printf '[%s] 警告: %s\n' "${0##*/}" "$*" >&2; }
@@ -31,13 +31,8 @@ export ARCH="${ARCH:-aarch64}"
 # ---------------------------------------------------------------------------
 export ROOTFS_BASE="${ROOTFS_BASE:-alarm}"
 case "$ROOTFS_BASE" in
-  alarm)             export ROOTFS_BASE="alarm" ;;
-  holo|holo-core)
-    # holo-core 底包在 e960212 里被移除：holo-lib.sh、01b-bootstrap-holo.sh、
-    # scripts/lists-holo/ 都已删除。保留这个分支只会让构建跑到一半才因为
-    # "找不到 holo-lib.sh" 或 "包列表不存在" 失败，不如在这里说清楚。
-    die "rootfs_base=holo-core 已不支持：相关脚本（scripts/host/holo-lib.sh、01b-bootstrap-holo.sh、scripts/lists-holo/）已删除。请使用 rootfs_base=alarm" ;;
-  *) die "不支持的 ROOTFS_BASE: $ROOTFS_BASE（可选 alarm）" ;;
+  alarm) export ROOTFS_BASE="alarm" ;;
+  *) die "不支持的 ROOTFS_BASE: $ROOTFS_BASE（只支持 alarm）" ;;
 esac
 
 # ---------------------------------------------------------------------------

@@ -8,7 +8,8 @@
 # 保留 .INSTALL：上游 postinst 的 udevadm trigger --subsystem-match=tee 与 fprintd try-restart 是
 #   pacman hook 不覆盖的语义（服务 enable 仍交给 workflow，理由见 .install 注释）
 # 依赖映射：libc6→glibc、libglib2.0-0t64→glib2、libgusb2→libgusb，firmware-xiaomi-sheng 取本仓库包
-#   （均已实跑验证）。上游要求 fprintd >= 1.94.5（私有 libfprint 1.94.10，ABI 需匹配）；
+#   （均已实跑验证）。fprintd 来自 ALARM extra，不锁版本：私有库与它共用
+#   libfprint-2.so.2 的 LIBFPRINT_2.0.0 ABI（实测 fprintd 1.94.5-2 能直接加载 1.94.10 的私有库）；
 #   license 只标自有代码，载荷另含 BSD-3-Clause/LGPL 组件
 pkgname=xiaomi-sheng-fingerprint
 pkgver=0.1.4

@@ -10,8 +10,8 @@
 ## 参数说明
 
 | 参数 | 默认值 | 说明 |
-|---|---|---|
-| **rootfs_base** | `alarm` | 底包与软件源：Arch Linux ARM 官方 tarball + `core/extra/alarm` 滚动仓库。`holo-core` 已移除（脚本在 `e960212` 删除），选它会直接报错 |
+| --- | --- | --- |
+| **rootfs_base** | `alarm` | 底包与软件源：Arch Linux ARM 官方 tarball + `core/extra/alarm` 滚动仓库。只有 `alarm` 一个可选值 |
 | **桌面环境** | `KDE Plasma` | `GNOME` / `server`（无图形界面） |
 | **plasma_mobile** | `false` | 勾选后用 `plasma-mobile` 替代 `plasma-desktop` |
 | **browser** | `firefox` | `none` 则不安装（Arch 官方仓库的 firefox 是普通包） |
@@ -36,6 +36,7 @@
 与姊妹项目 ubuntu-sheng 的差异只有两处：没有 `ubuntu_series` 输入；`browser` 默认为 `firefox`。
 
 **设备功能包**由 `_packages.yml` 构建：内核、固件、传感器、`xiaomi-*` 等，一个包一个作业。
+官方仓库已有的包（如 `fprintd`、`libfprint`）不重复构建，直接由 ALARM 的 `extra` 提供。
 构建用的 ALARM chroot 由 `prepare-chroot` 作业准备一次，打成快照走 artifact 分发给各构建作业，
 不要在作业里改回 `actions/cache`：并行作业共用一个 key 时只有一个能保存。
 
@@ -52,15 +53,12 @@
   留空时只生成 `language` 选中的那一个。
 - `timezone` 写 `/etc/localtime` 软链。旧版本完全没有这一步，镜像按 UTC 走，桌面时间会差几个小时。
 
-`rootfs_base=holo-core` 已移除：`scripts/host/holo-lib.sh`、`01b-bootstrap-holo.sh` 与
-`scripts/lists-holo/` 在 `e960212` 删除，`distro-env.sh` 现在会直接拒绝该值。
-
 ## 设备包仓库
 
 除了组装 rootfs，每次构建还会把全部设备包整理成 pacman 仓库，发布到本仓库的
 `repo` Release（作业 `publish-repo`）：
 
-```
+```text
 https://github.com/awsl1414/archlinux-sheng/releases/download/repo
 ```
 
@@ -95,6 +93,11 @@ sudo pacman -Syu
 ```bash
 sudo pacman -U https://github.com/awsl1414/archlinux-sheng/releases/download/repo/<文件名>
 ```
+
+`fprintd` 和 `libfprint` 不在这个仓库里，由 ALARM 的 `extra` 提供。设备上装过旧版
+本地包的话，升级时会看到一次正常的版本替换（走 `extra`，不再有每次 `-Syu` 都弹的
+`:: Replace ... ?` 提示）：指纹驱动的私有 `libfprint` 由 `xiaomi-sheng-fingerprint`
+自带、经 systemd drop-in 生效，与 `extra` 的那份并存。
 
 ### 升级内核必须重刷 boot.img
 
@@ -144,7 +147,7 @@ sudo pacman -Syu --ignore linux-xiaomi-sheng
 仓库内包含的第三方内容如下，版权归各自权利人：
 
 | 内容 | 来源 | 许可 |
-|---|---|---|
+| --- | --- | --- |
 | `mkbootimg` | AOSP `system/tools/mkbootimg` | Apache-2.0 |
 | `sm8550.config` | [ianchb/sm8550-mainline](https://github.com/ianchb/sm8550-mainline) | GPL-2.0（Linux 内核配置） |
 | `patches/`（`adsprpcd-sensorspd.service`、`wait_for_qmi_service.patch`） | 上游 `debian-sheng` 及其各自上游 | 随各上游仓库 |

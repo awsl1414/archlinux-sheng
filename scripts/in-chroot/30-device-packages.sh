@@ -53,9 +53,6 @@ done
 #      与元包冲突时**不会**顺带移除它的分包，而分包与本包文件路径会重叠
 #      （例如 ath12k/WCN7850/hw2.0/*），会让后面的 pacman -U 因文件冲突直接失败。
 #      因此这里显式移除全部 linux-firmware* 包，设备固件统一由本仓库的包提供。
-#    * fprintd / libfprint：本仓库自己编的版本与 ALARM 仓库同名同路径。
-#      base.list 已经不装 fprintd，但设备包里的 fprintd 依赖 libfprint，
-#      不能让仓库版本先被解析进来，所以这两个也在这里显式移除。
 #    * linux-aarch64：ALARM 的 rootfs tarball 预装的 stock 内核（无 sheng DTB）。
 #      linux-xiaomi-sheng 声明了 conflicts=('linux' 'linux-aarch64')，但 pacman 在
 #      `--noconfirm` 下对"是否移除冲突包"默认回答 N，实测报
@@ -63,7 +60,7 @@ done
 #        :: linux-xiaomi-sheng-... and linux-aarch64-... are in conflict (linux)
 #      所以必须在这里显式先删掉（-Rdd 跳过依赖检查）。
 # ---------------------------------------------------------------------------
-for name in libssc iio-sensor-proxy fprintd libfprint linux-aarch64; do
+for name in libssc iio-sensor-proxy linux-aarch64; do
   if pac_installed "$name"; then
     warn "移除 $name（$(pac_version "$name")）：与本地包同名/冲突，改由本仓库提供"
     pacman -Rdd --noconfirm --color never "$name" || warn "移除 $name 失败（继续）"
@@ -119,10 +116,7 @@ fi
 # ---------------------------------------------------------------------------
 # 5) 服务启用
 #    清单在 scripts/lists/services.enable，90-verify.sh 用同一份做校验。
-#
-#    旧版在这儿手写 `if [[ -f … ]]; then systemctl enable …`，漏写一个没有任何提示：
-#    xiaomi-sheng-thp（触控）就是这样在整轮构建里静默缺席的，设备上只剩裸触控设备。
-#    现在 required 的 unit 缺文件直接失败。
+#    required 的 unit 缺文件直接失败；optional 的只告警。
 #
 #    清单里只放必须 enable 的 unit。靠 udev / D-Bus 激活的（iio-sensor-proxy、
 #    xiaomi-mipps-auth、keyboard-helper 的两个）没有 [Install] 段，不要写进来。

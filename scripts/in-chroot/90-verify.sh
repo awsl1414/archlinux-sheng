@@ -62,7 +62,6 @@ fi
 #   提供，指向 /usr/lib/systemd/systemd）。缺了它内核会 panic：
 #     Kernel panic - not syncing: No working init found.
 #   设备侧表现为**开机全黑、背光不亮**，与"刷砖/内核没起来"完全一样，极难排查。
-#   Holo Core 底座（只有 systemd + systemd-libs）就缺这个包 —— 实机黑屏事故的根因。
 # ---------------------------------------------------------------------------
 INIT_OK=0
 for cand in /sbin/init /usr/sbin/init /usr/lib/systemd/systemd; do
@@ -212,6 +211,25 @@ for p in $(pacman -Qq --color never 2>/dev/null | grep -E '^xiaomi-' || true); d
 done
 if [[ "$XIAOMI_COUNT" -eq 0 ]]; then
   warn "没有任何 xiaomi-* 包被安装（deb 下载或重打包可能失败，见 README「已知限制」）"
+fi
+
+# ---------------------------------------------------------------------------
+# 6.2) 指纹栈
+#   fprintd / libfprint 来自 ALARM extra，不是本地包。私有 FPC1553 libfprint 由
+#   xiaomi-sheng-fingerprint 自带、经 fprintd.service.d/ 的 drop-in 用
+#   LD_LIBRARY_PATH 生效 —— drop-in 在而 fprintd 不在时指纹是哑的，所以成对校验。
+# ---------------------------------------------------------------------------
+for p in fprintd libfprint; do
+  if pac_installed "$p"; then
+    pass "pacman -Q $p → $(pac_version "$p")"
+  else
+    fail "缺少 $p（应由 ALARM extra 提供）"
+  fi
+done
+if [[ -f /usr/lib/systemd/system/fprintd.service.d/10-xiaomi-sheng-fpc1553.conf ]]; then
+  pass "存在 fprintd 的 FPC1553 drop-in"
+else
+  skip "缺少 fprintd 的 FPC1553 drop-in（xiaomi-sheng-fingerprint 未装？指纹会走发行版驱动）"
 fi
 
 # ---------------------------------------------------------------------------
