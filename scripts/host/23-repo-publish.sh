@@ -12,9 +12,17 @@
 # 输出目录必须是累积的。workflow 先拉回上一版仓库，本脚本在它之上追加新包并裁掉
 # 过旧版本；从空目录开始会让旧版本文件和对应数据库条目一起消失。
 #
+# 但「累积」不等于「只增不减」：某个包从仓库里移除后，上一版留下的文件还在输出
+# 目录里，下一轮又会被拉回来，于是永远登记、永远删不掉（fprintd / libfprint 曾
+# 因为改由 ALARM 提供，在 Release 里滞留了很久，设备每次 -Syu 都被提示替换）。
+# 因此用 REPO_PKGS 声明本仓库当前提供哪些包，其余包在登记前从输出目录清掉。
+#
 # 环境变量：
 #   REPO_KEEP     每个包保留的版本数（默认 3，保留版本号最高的 N 个）
 #   REPO_URL      客户端访问仓库的基础 URL，写进生成的 <name>.conf
+#   REPO_PKGS     本仓库当前提供的包名，空格分隔。留空表示「不限制」——只在
+#                 拿不到 packages/ 树时使用（例如手工发布）。workflow 从
+#                 packages/ 下的全部 PKGBUILD 提取后传入。
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -26,6 +34,7 @@ OUT_DIR="${2:?用法: 23-repo-publish.sh <包所在目录> <输出目录> [仓�
 REPO_NAME="${3:-sheng}"
 REPO_KEEP="${REPO_KEEP:-3}"
 REPO_URL="${REPO_URL:-}"
+REPO_PKGS="${REPO_PKGS:-}"
 
 [[ -d "$SRC_DIR" ]] || die "源目录不存在: $SRC_DIR"
 # 排除 .sig：`*.pkg.tar.*` 会匹配到 foo-1.0-1-aarch64.pkg.tar.zst.sig，交给 repo-add 会报错
@@ -141,6 +150,36 @@ newest_per_pkg() {
     printf '%s\n' "${newest[$pkgname]}"
   done | sort
 }
+
+# 清掉已不再提供的包。必须在 repo-add 之前：数据库里删不掉的条目会让客户端
+# 一直看到这些包（rename/停发之后尤其明显）。
+# 只删输出目录里由上一版遗留下来的文件，本轮的来源目录（$SRC_DIR）不受影响。
+if [[ -n "$REPO_PKGS" ]]; then
+  declare -A offered=()
+  for p in $REPO_PKGS; do offered["$p"]=1; done
+
+  removed=0
+  for f in "$OUT_DIR"/*.pkg.tar.*; do
+    [[ -f "$f" && "$f" != *.sig ]] || continue
+    # 包名必须由 parse_pkg_filename 解析：pkgname 自己就含 '-'，
+    # 靠数连字符切分会把 libssc-xiaomi-sheng 切成 libssc-xiaomi
+    parse_pkg_filename "$f" || continue
+    if [[ -z "${offered[$PKG_NAME]:-}" ]]; then
+      rm -f "$f" "$f".sig
+      log "  移除已停发的包: ${f##*/}"
+      removed=$((removed + 1))
+    fi
+  done
+
+  # 数据库可能还留着这些包的条目（停发前登记过）。repo-add 只增不删，
+  # 所以有文件被移除时用全新重建代替增量。
+  if [[ "$removed" -gt 0 ]]; then
+    log "  已移除 $removed 个不再提供的包文件，重建数据库"
+    rm -f "$OUT_DIR/$REPO_NAME.db.tar.gz" "$OUT_DIR/$REPO_NAME.db" \
+          "$OUT_DIR/$REPO_NAME.files.tar.gz" "$OUT_DIR/$REPO_NAME.files"
+  fi
+  unset offered
+fi
 
 mapfile -t pkgs < <(newest_per_pkg)
 [[ "${#pkgs[@]}" -gt 0 ]] || die "无法从 $OUT_DIR 解析出任何包（文件名不符合 makepkg 命名规则？）"

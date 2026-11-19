@@ -675,7 +675,17 @@ jobs:
           REPO_URL: "https://github.com/${{ github.repository }}/releases/download/repo"
         run: |
           chmod +x scripts/host/23-repo-publish.sh
-          scripts/host/23-repo-publish.sh pkgs repo-out sheng
+          # 仓库只应提供 packages/*/PKGBUILD 里还在的包。repo-out 是从上一版
+          # Release 拉回来的，停发或改名的包会一直留在里面、被反复登记，
+          # 客户端于是永远能看到它们（fprintd/libfprint 就这样滞留过）。
+          # 必须递归找：linux-xiaomi-sheng 的 PKGBUILD 在 custom/ 与 prebuilt/
+          # 子目录里，packages/*/PKGBUILD 匹配不到，漏掉它会把内核包当停发包删掉
+          REPO_PKGS="$(find packages -name PKGBUILD -print0 \
+                        | xargs -0 grep -h -oE '^pkgname=[^ ]+' \
+                        | cut -d= -f2 | sort -u | tr '\n' ' ')"
+          echo "本仓库提供的包：${REPO_PKGS}"
+          [[ -n "${REPO_PKGS// /}" ]] || { echo "::error::没能从 packages/*/PKGBUILD 提取到 pkgname"; exit 1; }
+          REPO_PKGS="$REPO_PKGS" scripts/host/23-repo-publish.sh pkgs repo-out sheng
 
       # 内核包升级后设备的 boot 分区不会跟着变，重开机时内核模块与 boot.img 的
       # vermagic 不匹配会直接黑屏。这里把本次构建用的 boot.img 一起发布，文件名带
