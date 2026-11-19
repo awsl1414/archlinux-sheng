@@ -65,8 +65,9 @@ https://github.com/awsl1414/archlinux-sheng/releases/download/repo
 已经跑着这套 rootfs 的设备可以直接升级，不用重刷镜像。
 
 先取出仓库配置片段，再把它放到 `/etc/pacman.conf` 里所有官方仓库段（`[core]`、
-`[extra]`、`[alarm]`）之前。顺序不能颠倒：本仓库的包替换了官方仓库的同名包，
-排在后面时 pacman 会先解析官方版本。
+`[extra]`、`[alarm]`）之前。顺序不能颠倒：本仓库的几个包用 `provides` 顶替官方包
+（`iio-sensor-proxy-sheng` 提供 `iio-sensor-proxy`、`libssc-xiaomi-sheng` 提供
+`libssc`、`linux-xiaomi-sheng` 提供 `linux`），排在后面时 pacman 会先解析到官方版本。
 
 ```bash
 curl -sSL https://github.com/awsl1414/archlinux-sheng/releases/download/repo/sheng.conf \
@@ -94,10 +95,13 @@ sudo pacman -Syu
 sudo pacman -U https://github.com/awsl1414/archlinux-sheng/releases/download/repo/<文件名>
 ```
 
-`fprintd` 和 `libfprint` 不在这个仓库里，由 ALARM 的 `extra` 提供。设备上装过旧版
-本地包的话，升级时会看到一次正常的版本替换（走 `extra`，不再有每次 `-Syu` 都弹的
-`:: Replace ... ?` 提示）：指纹驱动的私有 `libfprint` 由 `xiaomi-sheng-fingerprint`
-自带、经 systemd drop-in 生效，与 `extra` 的那份并存。
+不再提供的包（改名或改由官方仓库提供）会连同 Release 上的文件一起清掉，不会留在
+仓库里。`fprintd` 和 `libfprint` 就属于后者：它们由 ALARM 的 `extra` 提供，本仓库
+不再分发。
+
+设备上装过旧版本地包的话，升级时会看到一次正常的版本替换（走 `extra`，不再有每次
+`-Syu` 都弹的 `:: Replace ... ?` 提示）：指纹驱动的私有 `libfprint` 由
+`xiaomi-sheng-fingerprint` 自带、经 systemd drop-in 生效，与 `extra` 的那份并存。
 
 ### 升级内核必须重刷 boot.img
 
